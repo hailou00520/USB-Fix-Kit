@@ -34,3 +34,6 @@ Desktop.ini
 *.log
 .idea/
 .vscode/
+
+tools/
+

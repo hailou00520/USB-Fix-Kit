@@ -508,7 +508,7 @@ export default function App() {
               <div className="space-y-0.5 p-3.5 font-mono text-[11.5px] leading-5 text-zinc-600">
                 {logs.length === 0 ? (
                   <div className="flex h-full min-h-[5.5rem] flex-col justify-center gap-1.5 py-1">
-                    <p className="wait-cursor text-[12.5px] font-medium text-zinc-800">等待操作…</p>
+                    <p className="text-[12.5px] font-medium text-zinc-800">等待操作…</p>
                     <div className="space-y-1 text-zinc-500">
                       <p className="tip-item">
                         <span className="mr-2 text-teal-700">01</span>

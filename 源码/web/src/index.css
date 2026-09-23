@@ -178,11 +178,6 @@
   40% { box-shadow: 0 0 0 8px rgb(15 118 110 / 0); }
   100% { box-shadow: 0 1px 2px rgb(24 24 27 / 0.05), 0 3px 12px rgb(24 24 27 / 0.07); }
 }
-@keyframes blink-cursor {
-  0%, 45% { opacity: 1; }
-  50%, 95% { opacity: 0; }
-  100% { opacity: 1; }
-}
 @keyframes grid-drift {
   0% { background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0; }
   100% { background-position: 0 0, 0 0, 0 0, 28px 28px, 28px 28px, 0 0; }
@@ -382,13 +377,6 @@
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent, #0f766e, transparent);
   animation: progress-slide 0.95s ease-in-out infinite;
-}
-
-.wait-cursor::after {
-  content: "▌";
-  margin-left: 2px;
-  color: #0f766e;
-  animation: blink-cursor 1.1s step-end infinite;
 }
 
 /* 一体材质：青绿雾面底 + 半透卡片，避免「白纸贴灰纸」 */
