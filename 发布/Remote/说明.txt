@@ -1,0 +1,6 @@
+本目录已放入：ToDesk_Lite.exe（精简版）
+
+「部署远程软件自启」会把它拷到目标机 C:\Tools\RemoteFix\
+并用 Startup bat 开机启动（不直接放 exe，避免安全警告）。
+
+若要换软件：删掉本文件旁的 exe，再放入新的 ToDesk/向日葵绿色版即可。

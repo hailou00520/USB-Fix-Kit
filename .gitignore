@@ -1,0 +1,36 @@
+# Build / deps
+**/node_modules/
+**/bin/
+**/obj/
+**/.vs/
+**/*.user
+**/*.suo
+**/dist/
+源码/web/fonts_tmp/
+
+# Local C# build
+源码/USBFixTool/bin/
+源码/USBFixTool/obj/
+
+# 发布包中的大文件 / 构建产物（源码可自行编译）
+发布/**/*.exe
+发布/**/*.dll
+发布/wwwroot/
+发布/Remote/**/*.exe
+
+# 主题包字体（版权限制，勿公开上传；本地放 public/fonts）
+源码/web/public/fonts/*.ttf
+源码/web/public/fonts/*.otf
+源码/USBFixTool/wwwroot/fonts/
+源码/USBFixTool/wwwroot/assets/
+
+# 旧目录残留（仅根目录）
+/USBFixTool/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+.idea/
+.vscode/
