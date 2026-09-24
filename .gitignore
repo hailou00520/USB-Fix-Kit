@@ -35,5 +35,10 @@ Desktop.ini
 .idea/
 .vscode/
 
-tools/
+# 畅通匣：忽略其独立前端构建与 venv，保留 Python 源码
+源码/畅通匣/web/node_modules/
+源码/畅通匣/web/dist/
+源码/畅通匣/**/__pycache__/
+源码/畅通匣/*.exe
+源码/畅通匣/wifi_backup/
 

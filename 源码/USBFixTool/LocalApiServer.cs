@@ -103,7 +103,9 @@ public sealed class LocalApiServer : IDisposable
                     BroadcastLog("");
                     BroadcastLog(action == "check"
                         ? "检查完成（未修改系统）。"
-                        : "完成 — 请重启电脑测试键鼠。");
+                        : action.StartsWith("tc", StringComparison.Ordinal)
+                            ? "畅通匣操作完成。"
+                            : "完成 — 请重启电脑测试键鼠。");
                     await WriteJson(res, new { ok = true, message = "完成" });
                 }
                 catch (Exception ex)
@@ -194,9 +196,95 @@ public sealed class LocalApiServer : IDisposable
                 BroadcastLog($"已打开: {target}");
                 break;
             }
+            // 畅通匣（不删 USB 设备 / 不写 Enum\\USB）
+            case "tcNetDiagnose":
+                await RunTongchang("network_diagnose");
+                break;
+            case "tcNetFixWifi":
+                await RunTongchang("network_fix_wifi");
+                break;
+            case "tcNetFixDriver":
+                await RunTongchang("network_fix_driver");
+                break;
+            case "tcNetWaitUsb":
+                await RunTongchang("network_wait_usb");
+                break;
+            case "tcNetResetStack":
+                await RunTongchang("network_reset_stack");
+                break;
+            case "tcNetFull":
+                await RunTongchang("network_full_repair");
+                break;
+            case "tcNetBackupWifi":
+                await RunTongchang("network_backup_wifi");
+                break;
+            case "tcNetRestoreWifi":
+                await RunTongchang("network_restore_wifi");
+                break;
+            case "tcShareDiagnose":
+                await RunTongchang("share_diagnose");
+                break;
+            case "tcShareFull":
+                await RunTongchang("share_full_repair");
+                break;
+            case "tcShareHosting":
+                await RunTongchang("share_enable_hosting", new Dictionary<string, object?> { ["close_password"] = true });
+                break;
+            case "tcShareNas":
+                await RunTongchang("share_fix_win11_nas");
+                break;
+            case "tcLaunchGui":
+                LaunchTongchangGui();
+                break;
             default:
                 throw new InvalidOperationException($"未知操作: {action}");
         }
+    }
+
+    private async Task RunTongchang(string cmd, Dictionary<string, object?>? extra = null)
+    {
+        if (RepairEngine.IsPeEnvironment())
+            throw new InvalidOperationException("畅通匣功能需在正常 Windows 下使用（PE 请用 USB 急救）。");
+        var runner = new TongchangRunner(BroadcastLog);
+        var root = await runner.RunAsync(cmd, extra);
+        if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
+        {
+            var msg = root.TryGetProperty("error", out var e) ? e.GetString() : "畅通匣返回失败";
+            throw new InvalidOperationException(msg ?? "畅通匣返回失败");
+        }
+    }
+
+    private void LaunchTongchangGui()
+    {
+        var baseDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
+        var candidates = new[]
+        {
+            Path.Combine(baseDir, "畅通匣.exe"),
+            Path.Combine(baseDir, "畅通匣", "畅通匣.exe"),
+            Path.Combine(baseDir, "畅通匣", "unlock_folder.py"),
+        };
+        var hit = candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("未找到 畅通匣.exe / unlock_folder.py");
+
+        if (hit.EndsWith(".py", StringComparison.OrdinalIgnoreCase))
+        {
+            var py = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "Python", "Python312", "python.exe");
+            if (!File.Exists(py)) py = "python";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = py,
+                Arguments = $"\"{hit}\"",
+                WorkingDirectory = Path.GetDirectoryName(hit)!,
+                UseShellExecute = true,
+            });
+        }
+        else
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(hit) { UseShellExecute = true });
+        }
+        BroadcastLog("已启动畅通匣独立窗口");
     }
 
     private static string RequireDrive()

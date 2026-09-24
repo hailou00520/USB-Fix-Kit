@@ -20,6 +20,11 @@ import {
   X,
   Copy,
   HardDrive,
+  Wifi,
+  FolderOpen,
+  Share2,
+  Network,
+  ExternalLink,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -40,6 +45,8 @@ import {
   type StatusInfo,
 } from "@/lib/api"
 
+type KitMode = "usb" | "tongchang"
+
 type ActionItem = {
   id: ActionId
   title: string
@@ -49,6 +56,7 @@ type ActionItem = {
   danger?: boolean
   peOnly?: boolean
   winOnly?: boolean
+  mode: KitMode
 }
 
 const ACTIONS: ActionItem[] = [
@@ -59,18 +67,21 @@ const ACTIONS: ActionItem[] = [
     icon: <Zap className="size-5" />,
     featured: true,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "check",
     title: "仅检查问题（完整）",
     description: "完整只读体检：服务/过滤/策略/PnP/电源等；区分严重问题与提示，不修改系统",
     icon: <Search className="size-4" />,
+    mode: "usb",
   },
   {
     id: "remote",
     title: "部署远程软件自启",
     description: "独立功能：复制绿版、清安全标记、只用 bat 自启（不把 exe 放进 Startup，避免弹窗）",
     icon: <MonitorSmartphone className="size-4" />,
+    mode: "usb",
   },
   {
     id: "usbdk",
@@ -78,6 +89,7 @@ const ACTIONS: ActionItem[] = [
     description: "双 ControlSet · 清过滤驱动 · 补 usbxhci / hub Start",
     icon: <Bug className="size-4" />,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "usb",
@@ -85,6 +97,7 @@ const ACTIONS: ActionItem[] = [
     description: "注册表双集 · DISM · SFC",
     icon: <Usb className="size-4" />,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "account",
@@ -92,6 +105,7 @@ const ACTIONS: ActionItem[] = [
     description: "启用 Administrator · 空密码进桌面",
     icon: <Shield className="size-4" />,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "deploy",
@@ -99,6 +113,7 @@ const ACTIONS: ActionItem[] = [
     description: "写入穷尽修复脚本到 Windows 自启",
     icon: <Wrench className="size-4" />,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "drivers",
@@ -107,6 +122,7 @@ const ACTIONS: ActionItem[] = [
     icon: <Trash2 className="size-4" />,
     danger: true,
     peOnly: true,
+    mode: "usb",
   },
   {
     id: "winFix",
@@ -115,6 +131,7 @@ const ACTIONS: ActionItem[] = [
     icon: <Play className="size-5" />,
     featured: true,
     winOnly: true,
+    mode: "usb",
   },
   {
     id: "uninstall",
@@ -122,6 +139,7 @@ const ACTIONS: ActionItem[] = [
     description: "移除服务、自启项与体检脚本",
     icon: <Trash2 className="size-4" />,
     winOnly: true,
+    mode: "usb",
   },
   {
     id: "openLog",
@@ -129,6 +147,114 @@ const ACTIONS: ActionItem[] = [
     description: "白话结论：要不要管、严重/提示分别是什么",
     icon: <FileText className="size-4" />,
     winOnly: true,
+    mode: "usb",
+  },
+  // —— 畅通匣（安全：不删 USB 设备、不写 Enum\\USB）——
+  {
+    id: "tcNetDiagnose",
+    title: "诊断网络 / WiFi",
+    description: "只读检查网卡、WLAN 服务与连通性",
+    icon: <Search className="size-5" />,
+    featured: true,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetFixWifi",
+    title: "一键修复 WiFi（仅服务）",
+    description: "重启 WLAN 等服务 · 刷新 DNS · 不碰 USB",
+    icon: <Wifi className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetFixDriver",
+    title: "软重置无线服务",
+    description: "仅重启 WLAN（已禁用删设备 / USB 省电写入）",
+    icon: <RefreshCw className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetWaitUsb",
+    title: "等待拔插无线网卡",
+    description: "只监测人工拔插，不删除设备节点",
+    icon: <Usb className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetResetStack",
+    title: "重置协议栈",
+    description: "Winsock / TCP-IP · 可能需重启",
+    icon: <Network className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetFull",
+    title: "网络全面修复",
+    description: "服务软重启 → 协议栈（不碰 USB）",
+    icon: <Wrench className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetBackupWifi",
+    title: "备份 WiFi",
+    description: "导出配置到软件目录 wifi_backup",
+    icon: <HardDrive className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcNetRestoreWifi",
+    title: "导入 WiFi",
+    description: "从 wifi_backup 写回并尝试连接",
+    icon: <Wifi className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcShareDiagnose",
+    title: "诊断文件共享",
+    description: "SMB / 发现 / 防火墙 / Win11 来宾",
+    icon: <Share2 className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcShareFull",
+    title: "共享全面修复",
+    description: "专用网络 · 发现 · 防火墙 · SMB",
+    icon: <Share2 className="size-5" />,
+    featured: true,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcShareHosting",
+    title: "一键开启本机共享",
+    description: "开主机共享（可关密码保护）",
+    icon: <FolderOpen className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcShareNas",
+    title: "修复 Win11 / NAS 来宾",
+    description: "AllowInsecureGuestAuth 等",
+    icon: <MonitorSmartphone className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
+  },
+  {
+    id: "tcLaunchGui",
+    title: "打开畅通匣完整窗口",
+    description: "文件夹占用扫描 / 更多共享选项（独立界面）",
+    icon: <ExternalLink className="size-4" />,
+    winOnly: true,
+    mode: "tongchang",
   },
 ]
 
@@ -155,6 +281,7 @@ export default function App() {
   const [done, setDone] = useState(false)
   const [maximized, setMaximized] = useState(false)
   const [inHost, setInHost] = useState(false)
+  const [mode, setMode] = useState<KitMode>("usb")
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
@@ -219,6 +346,7 @@ export default function App() {
 
   const isPe = status?.isPe ?? true
   const visible = ACTIONS.filter((a) => {
+    if (a.mode !== mode) return false
     if (a.peOnly && !isPe) return false
     if (a.winOnly && isPe) return false
     return true
@@ -226,7 +354,7 @@ export default function App() {
   const featured = visible.filter((a) => a.featured)
   const rest = visible.filter((a) => !a.featured)
   const needsDrive = (a: ActionItem) =>
-    !!a.peOnly || (a.id === "check" && isPe) || (a.id === "remote" && isPe)
+    a.mode === "usb" && (!!a.peOnly || (a.id === "check" && isPe) || (a.id === "remote" && isPe))
 
   const onDragDown = (e: MouseEvent) => {
     if (!inHost || e.button !== 0) return
@@ -269,18 +397,60 @@ export default function App() {
               </div>
               <div className="min-w-0 space-y-0.5">
                 <p className="animate-fade-up text-[10px] font-medium uppercase tracking-[0.16em] text-primary">
-                  USB Fix Kit
+                  USB Fix Kit + 畅通匣
                 </p>
                 <CardTitle
                   className="text-xl tracking-tight"
                   style={{ fontFamily: "var(--font-display)" }}
                 >
-                  USB 急救工具
+                  {mode === "usb" ? "USB 急救工具" : "畅通匣 · 网络 / 共享"}
                 </CardTitle>
                 <span className="title-underline" />
                 <CardDescription className="animate-fade-up animate-fade-up-delay-1 text-[12px] leading-snug">
-                  PE 点一次，进系统后干看着。穷尽办法自动修；全失败才提示重装。
+                  {mode === "usb"
+                    ? "PE 点一次，进系统后干看着。穷尽办法自动修；全失败才提示重装。"
+                    : "WiFi / 共享修复（不删 USB 设备、不写 Enum\\USB）。文件夹占用请开完整窗口。"}
                 </CardDescription>
+                <div className="mt-2 flex gap-1" data-no-drag>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setMode("usb")
+                      setLogs([])
+                      setDone(false)
+                      setError(null)
+                    }}
+                    className={cn(
+                      "rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      mode === "usb"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    )}
+                  >
+                    USB 急救
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || isPe}
+                    title={isPe ? "畅通匣需在正常 Windows 下使用" : undefined}
+                    onClick={() => {
+                      setMode("tongchang")
+                      setLogs([])
+                      setDone(false)
+                      setError(null)
+                    }}
+                    className={cn(
+                      "rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      mode === "tongchang"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80",
+                      isPe && "opacity-50"
+                    )}
+                  >
+                    畅通匣
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -550,7 +720,9 @@ export default function App() {
             </div>
             <Separator />
             <p className="shrink-0 text-center text-[10px] text-muted-foreground">
-              修好后拔 U 盘重启 · 进系统请干看着
+              {mode === "usb"
+                ? "修好后拔 U 盘重启 · 进系统请干看着"
+                : "畅通匣不碰 USB 设备节点 · 键鼠异常请用「USB 急救」"}
             </p>
           </CardContent>
         </Card>

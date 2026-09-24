@@ -16,6 +16,19 @@ export type ActionId =
   | "winFix"
   | "uninstall"
   | "openLog"
+  | "tcNetDiagnose"
+  | "tcNetFixWifi"
+  | "tcNetFixDriver"
+  | "tcNetWaitUsb"
+  | "tcNetResetStack"
+  | "tcNetFull"
+  | "tcNetBackupWifi"
+  | "tcNetRestoreWifi"
+  | "tcShareDiagnose"
+  | "tcShareFull"
+  | "tcShareHosting"
+  | "tcShareNas"
+  | "tcLaunchGui"
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
