@@ -23,6 +23,7 @@ import ctypes.wintypes as wt
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -1274,6 +1275,105 @@ def do_kill(lockers: list[Locker]) -> list[str]:
     return lines
 
 
+def find_process_by_basenames(basenames: set[str]) -> list[Locker]:
+    """按进程名查找（任务管理器里明面上的那些）。"""
+    want: set[str] = set()
+    for b in basenames:
+        b = (b or "").strip().lower()
+        if not b:
+            continue
+        want.add(b)
+        if b.endswith(".exe"):
+            want.add(b[:-4])
+        else:
+            want.add(b + ".exe")
+    if not want:
+        return []
+    result: list[Locker] = []
+    self_pid = os.getpid()
+    for pid, exe_name in _iter_pids():
+        if not pid or pid == self_pid:
+            continue
+        base = (exe_name or "").lower()
+        image = _process_image_path_cached(pid)
+        image_base = Path(image).name.lower() if image else ""
+        if base in want or image_base in want:
+            shown = exe_name or image_base or f"PID {pid}"
+            result.append(
+                _make_locker(
+                    pid,
+                    f"进程名匹配（任务管理器可见）: {shown}",
+                    name=shown,
+                )
+            )
+    return result
+
+
+def _resolve_lnk(path: Path) -> Path | None:
+    """解析 .lnk 快捷方式的真实目标路径。"""
+    try:
+        if path.suffix.lower() != ".lnk" or not path.is_file():
+            return None
+    except Exception:
+        return None
+    import json as _json
+
+    try:
+        # WScript.Shell：比手工解析 .lnk 二进制稳妥
+        ps = (
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+            + _json.dumps(str(path))
+            + "); if($s.TargetPath){$s.TargetPath}"
+        )
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=CREATE_NO_WINDOW,
+            timeout=8,
+        ).strip().strip('"')
+        if not out:
+            return None
+        dest = Path(out)
+        return dest
+    except Exception:
+        return None
+
+
+def _expand_scan_roots(path: Path) -> tuple[list[Path], list[str]]:
+    """路径展开：.lnk → 真实目标（便于找到正在运行的程序）。"""
+    notes: list[str] = []
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path, why: str = "") -> None:
+        try:
+            key = str(p.resolve()) if p.exists() else str(p)
+        except Exception:
+            key = str(p)
+        key_n = key.replace("/", "\\").lower().rstrip("\\")
+        if key_n in seen:
+            return
+        seen.add(key_n)
+        roots.append(p)
+        if why:
+            notes.append(why)
+
+    _add(path)
+    if path.suffix.lower() == ".lnk":
+        _progress("检测到快捷方式，正在解析真实目标…")
+        dest = _resolve_lnk(path)
+        if dest is None:
+            notes.append("快捷方式未能解析目标（可改为直接选 .exe 或安装目录）")
+        else:
+            _progress(f"快捷方式 → {dest}")
+            _add(dest, f"已解析快捷方式 → {dest}")
+            # 目标是可执行文件时，再扫其所在目录一层意义不大且很慢；
+            # 进程映像检测会对「正好是这个 exe」命中正在跑的 QQ。
+    return roots, notes
+
+
 def scan_target(path_str: str) -> tuple[list[Locker], str]:
     """全面扫描占用进程（多线程并行，不减少任何检查项）。"""
     import time
@@ -1286,23 +1386,119 @@ def scan_target(path_str: str) -> tuple[list[Locker], str]:
     _clear_scan_caches()
     t0 = time.perf_counter()
 
+    _progress("开始扫描占用…")
+    _progress(f"路径: {target}")
+
     if not _is_admin():
         notes.append("非管理员，部分句柄可能看不到")
+        _progress("提示: 未以管理员运行，部分占用可能看不到")
 
+    roots, expand_notes = _expand_scan_roots(target)
+    notes.extend(expand_notes)
+
+    all_groups: list[list[Locker]] = []
+
+    # 先按进程名捞一遍：任务管理器里明面上的 QQ 等，不能漏
+    name_keys: set[str] = {f"{target.stem}.exe", target.name}
+    for r in roots:
+        name_keys.add(r.name)
+        if r.suffix.lower() == ".exe":
+            name_keys.add(f"{r.stem}.exe")
+    name_keys = {k for k in name_keys if k and k.lower() not in {".lnk", "lnk"}}
+    # 去掉纯 .lnk 文件名当进程名
+    name_keys = {k for k in name_keys if not k.lower().endswith(".lnk")}
+    if name_keys:
+        _progress(f"按进程名查找: {', '.join(sorted(name_keys))}")
+        try:
+            by_name = find_process_by_basenames(name_keys)
+            all_groups.append(by_name)
+            if by_name:
+                _progress(f"进程名命中 {len(by_name)} 个（任务管理器可见）")
+                notes.append(f"进程名命中 {len(by_name)}")
+            else:
+                _progress("进程名未命中")
+        except Exception as e:
+            _progress(f"进程名查找异常: {e}")
+
+    for idx, root in enumerate(roots, 1):
+        if len(roots) > 1:
+            _progress(f"扫描目标 {idx}/{len(roots)}: {root}")
+        lockers_one, notes_one = _scan_one_root(root)
+        all_groups.append(lockers_one)
+        for n in notes_one:
+            if n not in notes:
+                notes.append(n)
+
+    # 若目标是 .exe（含快捷方式解析出的），再查「同目录正在跑的进程」
+    # 例：QQ.lnk → QQScLauncher.exe，真正登录的可能是同目录 QQ.exe
+    exe_parents: list[Path] = []
+    seen_par: set[str] = set()
+    for r in roots:
+        if r.suffix.lower() == ".exe" and r.parent.exists():
+            key = str(r.parent.resolve()).lower()
+            if key not in seen_par:
+                seen_par.add(key)
+                exe_parents.append(r.parent)
+    for parent in exe_parents:
+        _progress(f"查找同目录在跑进程: {parent}")
+        try:
+            sib = find_process_attr_lockers(parent)
+            all_groups.append(sib)
+            if sib:
+                _progress(f"同目录命中 {len(sib)} 个进程")
+                notes.append(f"同目录进程 {len(sib)}")
+            else:
+                _progress("同目录未发现在跑进程")
+        except Exception as e:
+            _progress(f"同目录进程查找异常: {e}")
+
+    lockers = merge_lockers(*all_groups)
+    elapsed = time.perf_counter() - t0
+    if not lockers:
+        notes.append("未发现占用进程")
+        _progress("未发现占用进程")
+        if target.suffix.lower() == ".lnk":
+            _progress("说明: 已按快捷方式名/解析目标名查找进程；仍为空请直接选安装目录")
+    else:
+        notes.append(f"合计 {len(lockers)} 个占用进程")
+        _progress(f"找到 {len(lockers)} 个占用进程")
+    notes.append(f"{elapsed:.1f}s")
+    _progress(f"扫描结束 · {elapsed:.1f}s")
+    return lockers, " · ".join(notes)
+
+
+def _scan_one_root(target: Path) -> tuple[list[Locker], list[str]]:
+    """对单个路径跑完整检测套件。"""
+    notes: list[str] = []
     all_paths: list[str] = []
     files_only: list[str] = []
     truncated = False
     if target.exists():
+        _progress("收集路径项…")
         all_paths, files_only, truncated = _collect_scan_paths(target)
+        _progress(f"路径项 {len(all_paths)}" + ("（已截断）" if truncated else ""))
+    else:
+        notes.append("路径不存在，已跳过文件/句柄类检测")
+        _progress("路径不存在，仅做进程名/命令行相关检测")
 
     results: dict[str, object] = {}
     errors: dict[str, str] = {}
+    labels = {
+        "proc": "进程属性（工作目录/映像/模块）",
+        "cmdline": "命令行引用",
+        "open": "打开文件句柄",
+        "rm": "Restart Manager",
+        "handle": "系统句柄表补检",
+    }
 
     def _run(name: str, fn) -> None:
+        _progress(f"进行中 · {labels.get(name, name)}…")
         try:
             results[name] = fn()
+            _progress(f"完成 · {labels.get(name, name)}")
         except Exception as e:
             errors[name] = str(e)
+            _progress(f"异常 · {labels.get(name, name)}: {e}")
 
     tasks = [
         ("proc", lambda: find_process_attr_lockers(target)),
@@ -1323,8 +1519,6 @@ def scan_target(path_str: str) -> tuple[list[Locker], str]:
                 ("rm", lambda: find_rm_lockers(target, files=files_only)),
             ]
         )
-    else:
-        notes.append("路径不存在，已跳过文件/句柄类检测")
 
     with ThreadPoolExecutor(max_workers=SCAN_POOL_WORKERS) as pool:
         futs = [pool.submit(_run, name, fn) for name, fn in tasks]
@@ -1374,14 +1568,7 @@ def scan_target(path_str: str) -> tuple[list[Locker], str]:
     elif "handle" in errors:
         notes.append(f"句柄表补检异常: {errors['handle']}")
 
-    lockers = merge_lockers(*groups)
-    elapsed = time.perf_counter() - t0
-    if not lockers:
-        notes.append("未发现占用进程")
-    else:
-        notes.append(f"合计 {len(lockers)} 个占用进程")
-    notes.append(f"{elapsed:.1f}s")
-    return lockers, " · ".join(notes)
+    return merge_lockers(*groups), notes
 
 
 # ---------------------------------------------------------------------------
@@ -1399,19 +1586,7 @@ _WIFI_EXCLUDE_RE = r"Virtual|Direct|Hosted Network|Bluetooth|WAN Miniport|Loopba
 def _run_hidden(
     args: list[str], timeout: float = 60.0, shell: bool = False
 ) -> tuple[int, str]:
-    try:
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            timeout=timeout,
-            shell=shell,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "命令超时"
-    except Exception as e:
-        return 1, str(e)
-
+    """跑外部命令；超时强制杀进程树（Windows 上 net stop / powershell 子进程常杀不干净）。"""
     def _dec(b: bytes) -> str:
         if not b:
             return ""
@@ -1422,75 +1597,190 @@ def _run_hidden(
                 continue
         return b.decode("utf-8", errors="replace").strip()
 
-    out = _dec(completed.stdout)
-    err = _dec(completed.stderr)
+    # CREATE_NEW_PROCESS_GROUP 便于超时整树杀掉
+    flags = CREATE_NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=shell,
+            creationflags=flags,
+        )
+    except Exception as e:
+        return 1, str(e)
+
+    try:
+        out_b, err_b = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # 先杀整树，再杀自身
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=8,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.communicate(timeout=3)
+        except Exception:
+            pass
+        return 124, f"命令超时({int(timeout)}s): {' '.join(args[:3])}"
+
+    out = _dec(out_b)
+    err = _dec(err_b)
     text = out if out else err
     if out and err and err not in out:
         text = f"{out}\n{err}"
-    return completed.returncode, text
+    return proc.returncode if proc.returncode is not None else 1, text
 
 
-def _run_powershell(script: str, timeout: float = 90.0) -> tuple[int, str]:
+def _run_powershell(script: str, timeout: float = 45.0) -> tuple[int, str]:
+    # 强制 UTF-8 输出，避免中文网卡名在管道里变成乱码
+    wrapped = (
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+        "$OutputEncoding = [Console]::OutputEncoding; "
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        + script
+    )
     return _run_hidden(
         [
             "powershell",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            script,
+            wrapped,
         ],
         timeout=timeout,
     )
+
+
+def _progress(msg: str) -> None:
+    """实时进度：写到 stderr，宿主立刻刷到 UI 日志（stdout 留给最终 JSON）。"""
+    try:
+        sys.stderr.write(f":: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _step(steps: list[str], msg: str) -> None:
+    steps.append(msg)
+    _progress(msg)
 
 
 def _network_result(ok: bool, steps: list[str], **extra) -> dict:
     return {"ok": ok, "is_admin": _is_admin(), "steps": steps, **extra}
 
 
+def _service_state(name: str) -> str:
+    """返回 RUNNING / STOPPED / UNKNOWN（快速 sc query）。"""
+    code, text = _run_hidden(["sc", "query", name], timeout=8)
+    t = (text or "").upper()
+    if "RUNNING" in t:
+        return "RUNNING"
+    if "STOPPED" in t:
+        return "STOPPED"
+    return "UNKNOWN"
+
+
 def _ensure_service(name: str, restart: bool = False) -> str:
-    """启动服务；必要时重启。Dhcp 依赖 WinHttpAutoProxySvc，先保证代理服务可用。"""
+    """启动服务；必要时软重启。用 sc 代替 net stop，避免依赖锁死卡死数分钟。"""
     if name == "Dhcp":
-        _run_hidden(["net", "start", "WinHttpAutoProxySvc"], timeout=20)
+        _run_hidden(["sc", "start", "WinHttpAutoProxySvc"], timeout=12)
         _run_powershell(
-            "Set-Service WinHttpAutoProxySvc -StartupType Manual -ErrorAction SilentlyContinue"
+            "Set-Service WinHttpAutoProxySvc -StartupType Manual -ErrorAction SilentlyContinue",
+            timeout=15,
         )
+
     _run_powershell(
-        f"Set-Service -Name '{name}' -StartupType Automatic -ErrorAction SilentlyContinue"
+        f"Set-Service -Name '{name}' -StartupType Automatic -ErrorAction SilentlyContinue",
+        timeout=15,
     )
-    if restart:
-        # 避免 Restart-Service 因依赖锁死：先 stop 失败也继续 start
-        _run_hidden(["net", "stop", name], timeout=25)
-        code, text = _run_hidden(["net", "start", name], timeout=30)
-        if code == 0:
-            return f"服务 {name}: 已重启"
-        code2, text2 = _run_powershell(
-            f"Start-Service -Name '{name}' -ErrorAction SilentlyContinue; "
-            f"(Get-Service '{name}').Status"
-        )
-        if "Running" in (text2 or ""):
-            return f"服务 {name}: 运行中"
-        return f"服务 {name}: 失败 ({(text2 or text)[:100]})"
-    code, text = _run_hidden(["net", "start", name], timeout=30)
-    if code == 0 or "already" in (text or "").lower() or "已经" in (text or ""):
-        return f"服务 {name}: 已启动/运行中"
+
+    state = _service_state(name)
+    if state == "RUNNING" and not restart:
+        return f"服务 {name}: 已在运行"
+
+    if restart and state == "RUNNING":
+        _progress(f"软停 {name}…")
+        # sc stop 立即返回；不要用 net stop（会干等依赖）
+        _run_hidden(["sc", "stop", name], timeout=10)
+        # 最多等 8 秒变 STOPPED，否则继续 start（避免卡死）
+        for _ in range(8):
+            time.sleep(1)
+            if _service_state(name) != "RUNNING":
+                break
+        else:
+            _progress(f"{name} 停止偏慢，继续尝试启动")
+
+    _progress(f"启动 {name}…")
+    code, text = _run_hidden(["sc", "start", name], timeout=15)
+    # 已在运行时 sc start 会非 0，再查一次状态
+    time.sleep(0.4)
+    if _service_state(name) == "RUNNING":
+        return f"服务 {name}: {'已重启' if restart else '已启动/运行中'}"
     code2, text2 = _run_powershell(
         f"Start-Service -Name '{name}' -ErrorAction SilentlyContinue; "
-        f"(Get-Service '{name}').Status"
+        f"(Get-Service '{name}').Status",
+        timeout=20,
     )
     if "Running" in (text2 or ""):
         return f"服务 {name}: 运行中"
-    return f"服务 {name}: 失败 ({(text2 or text)[:100]})"
+    return f"服务 {name}: 失败 ({(text2 or text or str(code))[:100]})"
 
 
 def _wlan_interface_alive() -> bool:
+    """netsh 有时漏报（驱动/语言差异）；同时参考 Get-NetAdapter 无线网卡是否 Up。"""
     code, text = _run_hidden(["netsh", "wlan", "show", "interfaces"], timeout=15)
-    if code != 0:
-        return False
-    t = text or ""
-    if "没有无线接口" in t or "no wireless" in t.lower():
-        return False
-    return ("SSID" in t) or ("名称" in t) or ("Name" in t) or ("GUID" in t)
+    t = (text or "").strip()
+    low = t.lower()
+    netsh_none = (
+        "没有无线接口" in t
+        or "no wireless interface" in low
+        or "there is no wireless" in low
+    )
+    if code == 0 and t and not netsh_none:
+        if any(
+            k in t
+            for k in (
+                "SSID",
+                "GUID",
+                "名称",
+                "Name",
+                "状态",
+                "State",
+                "无线电",
+                "Radio",
+                "BSSID",
+            )
+        ):
+            return True
+        # 有接口段但字段名不同
+        if "接口" in t or "interface" in low:
+            return True
+
+    # 回退：网卡层已 Up 的无线适配器
+    code2, text2 = _run_powershell(
+        rf"""
+$wifiRe = '{_WIFI_NAME_RE}'; $exclRe = '{_WIFI_EXCLUDE_RE}'
+$up = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{
+  $n=$_.Name; $d=$_.InterfaceDescription
+  (($n -match $wifiRe) -or ($d -match $wifiRe)) -and ($n -notmatch $exclRe) -and ($d -notmatch $exclRe) -and ($_.Status -eq 'Up')
+}})
+if ($up.Count -gt 0) {{ 'UP' }} else {{ 'DOWN' }}
+""",
+        timeout=20,
+    )
+    return "UP" in (text2 or "").upper()
 
 
 def _soft_restart_wlan() -> list[str]:
@@ -1516,8 +1806,9 @@ def network_diagnose() -> dict:
     """诊断网卡 / WLAN 服务 / 连通性 / 驱动状态。"""
     steps: list[str] = []
     if not _is_admin():
-        steps.append("提示: 当前非管理员，部分修复操作可能失败，建议以管理员运行")
+        _step(steps, "提示: 当前非管理员，部分修复操作可能失败，建议以管理员运行")
 
+    _progress("正在采集网卡、服务与连通性…")
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $wifiRe = '{_WIFI_NAME_RE}'
@@ -1587,11 +1878,12 @@ $ping_dns = [bool](Test-Connection -ComputerName 1.1.1.1 -Count 1 -Quiet -ErrorA
 
         try:
             data = json.loads(text)
+            _progress("采集完成，正在分析…")
         except json.JSONDecodeError:
-            steps.append(f"诊断解析失败: {text[:200]}")
+            _step(steps, f"诊断解析失败: {text[:200]}")
             data = {}
     else:
-        steps.append(f"诊断命令失败: {text[:300] or code}")
+        _step(steps, f"诊断命令失败: {text[:300] or code}")
 
     adapters = data.get("adapters") or []
     services = data.get("services") or []
@@ -1630,56 +1922,91 @@ $ping_dns = [bool](Test-Connection -ComputerName 1.1.1.1 -Count 1 -Quiet -ErrorA
         if "FAILED_START" in str(d.get("problem", "")).upper()
         or "NEED_RESTART" in str(d.get("problem", "")).upper()
     ]
-    no_wlan_if = not _wlan_interface_alive()
+    _progress("检查无线接口…")
+    wifi_up = any(str(a.get("status", "")).lower() == "up" for a in wifi_adapters)
+    netsh_alive = False
+    # 先看网卡层；再问 netsh（仅作补充，避免误报「无 WiFi」）
+    code_n, text_n = _run_hidden(["netsh", "wlan", "show", "interfaces"], timeout=15)
+    tn = (text_n or "").strip()
+    tnl = tn.lower()
+    netsh_none = (
+        "没有无线接口" in tn
+        or "no wireless interface" in tnl
+        or "there is no wireless" in tnl
+    )
+    if code_n == 0 and tn and not netsh_none:
+        netsh_alive = any(
+            k in tn
+            for k in ("SSID", "GUID", "名称", "Name", "状态", "State", "无线电", "Radio", "BSSID", "接口")
+        ) or ("interface" in tnl)
+    wlan_alive = wifi_up or netsh_alive or _wlan_interface_alive()
+    online_ok = bool(data.get("ping_internet")) and bool(data.get("ping_gateway") or data.get("gateway"))
 
     suggestions: list[str] = []
-    if code10 or (bad_pnp and no_wlan_if):
+    if code10 or (bad_pnp and not wlan_alive):
         suggestions.append(
             "无线芯片驱动已挂死(Code 10/14) → 请手动拔掉 USB 无线网卡等 5 秒再插上，或重启电脑（软件不再删除设备）"
         )
-        steps.append(
-            "判定: USB 无线驱动无响应；为避免 USB 失灵，请仅人工拔插供电或重启，勿用第三方工具删 USB 设备"
+        _step(
+            steps,
+            "判定: USB 无线驱动无响应；为避免 USB 失灵，请仅人工拔插供电或重启，勿用第三方工具删 USB 设备",
         )
     if bad_svc:
         names = ", ".join(s["name"] for s in bad_svc)
-        suggestions.append(f"关键服务未运行: {names} → 建议「一键修复 WiFi」")
-        steps.append(f"异常服务: {names}")
-    if down_wifi:
+        if wlan_alive and online_ok:
+            # 能上网就不当成故障，只提示可选手动拉起服务
+            _step(steps, f"提示: 服务 {names} 未运行（当前 WiFi/网络仍可用，可不处理）")
+        else:
+            suggestions.append(f"关键服务未运行: {names} → 建议「一键修复 WiFi」")
+            _step(steps, f"异常服务: {names}")
+    if down_wifi and not wifi_up:
         names = ", ".join(a.get("name", "?") for a in down_wifi)
         suggestions.append(f"无线网卡未启用/断开: {names}")
-        steps.append(f"异常无线网卡: {names}")
-    if bad_pnp:
+        _step(steps, f"异常无线网卡: {names}")
+    if bad_pnp and not wlan_alive:
         names = ", ".join(d.get("name", "?") for d in bad_pnp)
-        steps.append(f"异常驱动: {names}")
-    if no_wlan_if:
-        steps.append("netsh: 系统没有无线接口（WiFi 入口不会出现）")
+        _step(steps, f"异常驱动: {names}")
+    if wlan_alive:
+        if wifi_up and not netsh_alive:
+            _step(steps, "无线判定: 网卡已 Up（netsh 未列出接口，忽略误报）")
+        else:
+            _step(steps, "无线判定: 正常")
+    else:
+        _step(steps, "netsh/网卡: 未检测到可用无线接口（WiFi 入口可能缺失）")
         if not any("拔掉 USB" in s for s in suggestions):
-            suggestions.append("WiFi 入口缺失 → 人工拔插 USB 无线网卡，或重启；可先试「一键修复 WiFi」（仅服务）")
+            suggestions.append(
+                "WiFi 入口缺失 → 人工拔插 USB 无线网卡，或重启；可先试「一键修复 WiFi」（仅服务）"
+            )
     if not data.get("ping_internet"):
         suggestions.append("无法 ping 外网 → 可尝试「全面修复」（仅服务+协议栈，不碰 USB）")
-        steps.append("外网连通: 失败")
+        _step(steps, "外网连通: 失败")
     else:
-        steps.append("外网连通: 正常")
+        _step(steps, "外网连通: 正常")
     if data.get("ping_gateway"):
-        steps.append(f"网关连通: 正常 ({data.get('gateway')})")
+        _step(steps, f"网关连通: 正常 ({data.get('gateway')})")
     elif data.get("gateway"):
-        steps.append(f"网关连通: 失败 ({data.get('gateway')})")
+        _step(steps, f"网关连通: 失败 ({data.get('gateway')})")
     if not wifi_adapters and not wifi_pnp:
         suggestions.append("未检测到无线网卡，可能驱动异常或 USB 无线网卡未接通")
-        steps.append("未找到 WiFi 适配器")
-    if not suggestions:
+        _step(steps, "未找到 WiFi 适配器")
+    if wlan_alive and online_ok and not suggestions:
+        suggestions.append("WiFi / 网络看起来正常，无需修复")
+    elif not suggestions:
         suggestions.append("未发现明显异常；若仍无法上网，可试「全面修复」或人工拔插无线网卡")
 
     for a in adapters:
         mark = "WiFi" if a.get("is_wifi") else "网卡"
-        steps.append(
-            f"[{mark}] {a.get('name')}: {a.get('status')} · {a.get('desc') or ''}"
+        _step(
+            steps,
+            f"[{mark}] {a.get('name')}: {a.get('status')} · {a.get('desc') or ''}",
         )
     for d in wifi_pnp:
-        steps.append(
-            f"[驱动] {d.get('name')}: {d.get('status')} problem={d.get('problem') or '0'}"
+        _step(
+            steps,
+            f"[驱动] {d.get('name')}: {d.get('status')} problem={d.get('problem') or '0'}",
         )
 
+    _progress("网络诊断完成")
     return _network_result(
         True,
         steps,
@@ -1690,9 +2017,9 @@ $ping_dns = [bool](Test-Connection -ComputerName 1.1.1.1 -Count 1 -Quiet -ErrorA
         wlan_text=data.get("wlan_text") or "",
         ping_gateway=bool(data.get("ping_gateway")),
         ping_internet=bool(data.get("ping_internet")),
-        wlan_alive=_wlan_interface_alive(),
+        wlan_alive=wlan_alive,
         suggestions=suggestions,
-        need_unplug=bool(code10 or (bad_pnp and no_wlan_if)),
+        need_unplug=bool(code10 or (bad_pnp and not wlan_alive)),
     )
 
 
@@ -1704,23 +2031,35 @@ def network_fix_wifi() -> dict:
             False, ["需要管理员权限才能修复 WiFi"], suggestions=["请右键以管理员身份运行"]
         )
 
-    steps.append(_ensure_service("WinHttpAutoProxySvc", restart=False))
+    _step(steps, "=== 修复 WLAN / 网络服务（不碰 USB）===")
+    msg = _ensure_service("WinHttpAutoProxySvc", restart=False)
+    steps.append(msg)
+    _progress(msg)
     for svc in ("WlanSvc", "NlaSvc", "Dnscache", "netprofm", "Netman"):
-        steps.append(_ensure_service(svc, restart=True))
-    steps.append(_ensure_service("Dhcp", restart=False))  # 勿强行 Restart，易被代理服务卡住
+        _progress(f"处理服务 {svc}…")
+        msg = _ensure_service(svc, restart=True)
+        steps.append(msg)
+        _progress(msg)
+    msg = _ensure_service("Dhcp", restart=False)  # 勿强行 Restart，易被代理服务卡住
+    steps.append(msg)
+    _progress(msg)
 
+    _progress("刷新 DNS 缓存…")
     _run_hidden(["ipconfig", "/flushdns"], timeout=20)
-    steps.append("已刷新 DNS 缓存")
+    _step(steps, "已刷新 DNS 缓存")
 
     alive = _wlan_interface_alive()
     suggestions = []
     if alive:
         suggestions.append("无线接口已出现，可在任务栏连接 WiFi")
+        _step(steps, "无线接口: 已检测到")
     else:
         suggestions.append(
             "仍无 WiFi 入口：请人工拔掉 USB 无线网卡等待 5 秒再插上，或点「等待拔插恢复」仅监测"
         )
         suggestions.append("若是内置网卡无法拔插，请保存文件后重启一次")
+        _step(steps, "无线接口: 仍未出现")
+    _progress("一键修复 WiFi 完成")
     return _network_result(alive, steps, suggestions=suggestions, wlan_alive=alive)
 
 
@@ -1732,16 +2071,22 @@ def network_fix_wifi_driver() -> dict:
             False, ["需要管理员权限才能重置驱动"], suggestions=["请右键以管理员身份运行"]
         )
 
-    steps.extend(_soft_restart_wlan())
+    _step(steps, "=== 软重置无线服务（不删设备）===")
+    for line in _soft_restart_wlan():
+        steps.append(line)
+        _progress(line)
     alive = _wlan_interface_alive()
     suggestions = []
     if alive:
         suggestions.append("服务已重启，WiFi 入口应可用")
+        _step(steps, "无线接口: 已检测到")
     else:
         suggestions.append(
             "服务重启后仍无无线接口：请人工拔插 USB 无线网卡，或重启电脑（软件不再删除设备节点）"
         )
         suggestions.append("插上后可点「等待拔插恢复」监测是否回来")
+        _step(steps, "无线接口: 仍未出现")
+    _progress("软重置完成")
     return _network_result(
         alive, steps, suggestions=suggestions, wlan_alive=alive, need_unplug=not alive
     )
@@ -1854,10 +2199,13 @@ def network_full_repair() -> dict:
             False, ["需要管理员权限"], suggestions=["请右键以管理员身份运行"]
         )
 
-    steps.append("=== 1/3 软重启 WLAN 服务（不删设备）===")
+    _step(steps, "=== 1/3 软重启 WLAN 服务（不删设备）===")
     r2 = network_fix_wifi_driver()
-    steps.extend(r2.get("steps") or [])
+    for s in r2.get("steps") or []:
+        steps.append(str(s))
+        _progress(str(s))
     if r2.get("wlan_alive"):
+        _progress("无线已恢复")
         return _network_result(
             True,
             steps,
@@ -1865,19 +2213,26 @@ def network_full_repair() -> dict:
             wlan_alive=True,
         )
 
-    steps.append("=== 2/3 修复服务与 DNS ===")
-    steps.append(_ensure_service("WinHttpAutoProxySvc", restart=False))
-    for svc in ("WlanSvc", "NlaSvc", "Dnscache", "netprofm"):
-        steps.append(_ensure_service(svc, restart=True))
-    steps.append(_ensure_service("Dhcp", restart=False))
+    _step(steps, "=== 2/3 修复服务与 DNS ===")
+    for msg in (
+        _ensure_service("WinHttpAutoProxySvc", restart=False),
+        *(_ensure_service(svc, restart=True) for svc in ("WlanSvc", "NlaSvc", "Dnscache", "netprofm")),
+        _ensure_service("Dhcp", restart=False),
+    ):
+        steps.append(msg)
+        _progress(msg)
 
-    steps.append("=== 3/3 重置协议栈 ===")
+    _step(steps, "=== 3/3 重置协议栈 ===")
     r3 = network_reset_stack()
-    steps.extend(r3.get("steps") or [])
+    for s in r3.get("steps") or []:
+        steps.append(str(s))
+        _progress(str(s))
 
-    steps.append("=== 修复后诊断 ===")
+    _step(steps, "=== 修复后诊断 ===")
     diag = network_diagnose()
-    steps.extend((diag.get("steps") or [])[:14])
+    for s in (diag.get("steps") or [])[:14]:
+        steps.append(str(s))
+        _progress(str(s))
     suggestions = list(diag.get("suggestions") or [])
     if not diag.get("wlan_alive"):
         suggestions.insert(
@@ -1885,6 +2240,7 @@ def network_full_repair() -> dict:
             "服务/协议栈已处理仍无 WiFi：请人工拔插无线网卡或重启（软件不会再动 USB）",
         )
     ok = bool(diag.get("wlan_alive"))
+    _progress("网络全面修复完成")
     return _network_result(
         ok,
         steps,
@@ -2228,25 +2584,23 @@ try {
   $out.smb_client = $null
 }
 
-# 防火墙组（中英）
+# 防火墙组（中英）——按组名启用统计，避免 Get-NetFirewallRule 全表扫描卡死
 $fw = @()
-Get-NetFirewallRule -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayGroup -match 'File and Printer|Network Discovery|文件和打印机|网络发现' } |
-  Group-Object DisplayGroup | ForEach-Object {
-    $enabled = @($_.Group | Where-Object { $_.Enabled -eq 'True' }).Count
-    $fw += [PSCustomObject]@{ group=$_.Name; total=$_.Count; enabled=$enabled }
+foreach ($g in @('File and Printer Sharing','Network Discovery','文件和打印机共享','网络发现')) {
+  $rules = @(Get-NetFirewallRule -DisplayGroup $g -ErrorAction SilentlyContinue)
+  if ($rules.Count -gt 0) {
+    $enabled = @($rules | Where-Object { $_.Enabled -eq 'True' }).Count
+    $fw += [PSCustomObject]@{ group=$g; total=$rules.Count; enabled=$enabled }
   }
+}
 $out.firewall = $fw
 
 # 445 监听
 $listen = [bool](Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue)
 $out.port445 = $listen
 
-# SMB1 功能
-try {
-  $f = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
-  $out.smb1 = [string]$f.State
-} catch { $out.smb1 = 'unknown' }
+# SMB1：跳过 Get-WindowsOptionalFeature（DISM 经常卡数分钟）
+$out.smb1 = 'skipped'
 
 # 本机共享列表
 try {
@@ -2256,7 +2610,7 @@ try {
 
 $out | ConvertTo-Json -Depth 6 -Compress
 """
-    code, text = _run_powershell(ps, timeout=60)
+    code, text = _run_powershell(ps, timeout=35)
     data: dict = {}
     if code == 0 and text.strip():
         import json
@@ -2314,6 +2668,8 @@ $out | ConvertTo-Json -Depth 6 -Compress
     steps.append(f"[SMB1] 状态: {data.get('smb1') or '未知'}")
     if str(data.get("smb1", "")).lower() in ("disabled", "disablepending"):
         suggestions.append("极旧设备需要 SMB1 时再点「启用 SMB1（不推荐）」")
+    elif str(data.get("smb1", "")).lower() == "skipped":
+        steps.append("[SMB1] 已跳过慢速检测（需要时再手动启用）")
 
     host = os.environ.get("COMPUTERNAME", ".")
     for sh in data.get("shares") or []:
@@ -2346,7 +2702,9 @@ def share_fix_win11_nas() -> dict:
         )
 
     steps.append("⚠ 将降低 SMB 安全性，仅用于家庭/信任局域网")
+    _progress(steps[-1])
     # PowerShell SMB 客户端
+    _progress("配置 SMB 客户端（来宾/签名）…")
     code, text = _run_powershell(
         "Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -Force; "
         "Set-SmbClientConfiguration -RequireSecuritySignature $false -Force; "
@@ -2356,8 +2714,10 @@ def share_fix_win11_nas() -> dict:
         timeout=45,
     )
     steps.append(f"SMB 客户端配置: {(text or code)!s}"[:200])
+    _progress(steps[-1])
 
     # 注册表兜底（部分版本策略优先）
+    _progress("写入 AllowInsecureGuestAuth 注册表…")
     code2, text2 = _run_powershell(
         r"""
 $ErrorActionPreference='Continue'
@@ -2373,12 +2733,15 @@ New-ItemProperty -Path $gp -Name AllowInsecureGuestAuth -Value 1 -PropertyType D
         timeout=30,
     )
     steps.append(f"注册表 AllowInsecureGuestAuth: {(text2 or code2)}")
+    _progress(steps[-1])
 
     # 组策略模板项（若存在）
+    _progress("刷新 LanmanWorkstation…")
     _run_powershell(
         "Set-SmbServerConfiguration -RequireSecuritySignature $false -Force -ErrorAction SilentlyContinue"
     )
     steps.append(_ensure_service("LanmanWorkstation", restart=True))
+    _progress(steps[-1])
 
     suggestions = [
         "已允许不安全来宾并关闭强制 SMB 签名",
@@ -2393,36 +2756,29 @@ def share_fix_discovery() -> dict:
     if not _is_admin():
         return _network_result(False, ["需要管理员权限"], suggestions=["请以管理员运行"])
 
+    # 多数服务只需确保在跑；全量 restart 容易被依赖卡住
     for svc in ("fdPHost", "FDResPub", "SSDPSRV", "upnphost", "lmhosts", "dnscache"):
+        _progress(f"网络发现 · 确保服务 {svc}…")
         _run_powershell(
-            f"Set-Service -Name '{svc}' -StartupType Automatic -ErrorAction SilentlyContinue"
+            f"Set-Service -Name '{svc}' -StartupType Automatic -ErrorAction SilentlyContinue",
+            timeout=12,
         )
-        steps.append(_ensure_service(svc, restart=True))
+        # 仅对核心发现服务做软重启，其余只启动
+        do_restart = svc in ("fdPHost", "FDResPub")
+        msg = _ensure_service(svc, restart=do_restart)
+        steps.append(msg)
+        _progress(msg)
 
-    # netsh 高级共享（依赖语言，失败可忽略）
     cmds = [
         (["netsh", "advfirewall", "firewall", "set", "rule", "group=Network Discovery", "new", "enable=Yes"], "网络发现防火墙(英)"),
         (["netsh", "advfirewall", "firewall", "set", "rule", "group=网络发现", "new", "enable=Yes"], "网络发现防火墙(中)"),
     ]
     for args, label in cmds:
-        c, t = _run_hidden(args, timeout=25)
-        steps.append(f"{label}: {'成功' if c == 0 else '跳过'}")
-
-    # 启用网络发现/文件共享（PowerShell CIM）
-    code, text = _run_powershell(
-        r"""
-$ErrorActionPreference='Continue'
-# 通过注册表打开网络发现/文件共享（专用配置文件）
-$base = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Network\Nla'
-'discovery settings touched'
-# 确保发布本机资源
-Restart-Service FDResPub -Force -ErrorAction SilentlyContinue
-Restart-Service fdPHost -Force -ErrorAction SilentlyContinue
-'ok'
-""",
-        timeout=40,
-    )
-    steps.append(f"发现服务刷新: {(text or code)}")
+        _progress(f"{label}…")
+        c, t = _run_hidden(args, timeout=15)
+        msg = f"{label}: {'成功' if c == 0 else '跳过'}"
+        steps.append(msg)
+        _progress(msg)
 
     suggestions = [
         "网络发现服务已修复；请确认网络为「专用」",
@@ -2437,31 +2793,27 @@ def share_fix_firewall() -> dict:
     if not _is_admin():
         return _network_result(False, ["需要管理员权限"], suggestions=["请以管理员运行"])
 
+    _progress("正在放行共享防火墙规则…")
+    # 只按 DisplayGroup 启用，避免 Get-NetFirewallRule 全表扫描卡很久
     ps = r"""
 $ErrorActionPreference='Continue'
 $groups = @('File and Printer Sharing','Network Discovery','文件和打印机共享','网络发现')
-$n = 0
 foreach ($g in $groups) {
   try {
-    Enable-NetFirewallRule -DisplayGroup $g -ErrorAction Stop
+    Enable-NetFirewallRule -DisplayGroup $g -ErrorAction Stop | Out-Null
     "enabled: $g"
-    $n++
   } catch {
-    # netsh 回退
     $null = netsh advfirewall firewall set rule group="$g" new enable=Yes 2>&1
     "netsh: $g"
   }
 }
-# 额外按名称匹配
-Get-NetFirewallRule | Where-Object {
-  $_.DisplayGroup -match 'File and Printer|Network Discovery|文件和打印机|网络发现'
-} | Enable-NetFirewallRule -ErrorAction SilentlyContinue
 "done"
 """
-    code, text = _run_powershell(ps, timeout=60)
+    code, text = _run_powershell(ps, timeout=45)
     for ln in (text or "").splitlines():
         if ln.strip():
             steps.append(ln.strip())
+            _progress(ln.strip())
     suggestions = ["防火墙已放行共享相关规则；公用网络下仍可能受限，建议切专用"]
     return _network_result(code == 0 or bool(text), steps, suggestions=suggestions)
 
@@ -2472,6 +2824,7 @@ def share_fix_private_profile() -> dict:
     if not _is_admin():
         return _network_result(False, ["需要管理员权限"], suggestions=["请以管理员运行"])
 
+    _progress("读取并设置网络配置文件…")
     code, text = _run_powershell(
         r"""
 $ErrorActionPreference='Continue'
@@ -2493,6 +2846,7 @@ foreach ($p in $list) {
     for ln in (text or "").splitlines():
         if ln.strip():
             steps.append(ln.strip())
+            _progress(ln.strip())
     ok = code == 0 and any("→" in s for s in steps)
     return _network_result(
         ok,
@@ -2502,19 +2856,25 @@ foreach ($p in $list) {
 
 
 def share_restart_smb_services() -> dict:
-    """重启 Server / Workstation 等 SMB 核心服务。"""
+    """确保 SMB 核心服务在跑；仅对 Workstation 做软重启（Server 停掉易卡死）。"""
     steps: list[str] = []
     if not _is_admin():
         return _network_result(False, ["需要管理员权限"], suggestions=["请以管理员运行"])
+    _progress("检查 WinHttpAutoProxySvc…")
     steps.append(_ensure_service("WinHttpAutoProxySvc", restart=False))
-    for svc in ("LanmanWorkstation", "LanmanServer", "lmhosts"):
-        steps.append(_ensure_service(svc, restart=True))
-    return _network_result(True, steps, suggestions=["SMB 服务已重启，请重试 \\\\IP\\共享"])
+    _progress(steps[-1])
+    # LanmanServer 只确保启动，不做 stop（文件占用时会卡死）
+    for svc, restart in (("LanmanWorkstation", True), ("LanmanServer", False), ("lmhosts", False)):
+        _progress(f"{'软重启' if restart else '确保'} {svc}…")
+        steps.append(_ensure_service(svc, restart=restart))
+        _progress(steps[-1])
+    return _network_result(True, steps, suggestions=["SMB 服务已处理，请重试 \\\\IP\\共享"])
 
 
 def share_clear_credentials() -> dict:
     """清理凭据管理器中可能过期的网络共享凭据。"""
     steps: list[str] = []
+    _progress("枚举凭据管理器…")
     code, text = _run_hidden(["cmdkey", "/list"], timeout=20)
     lines = (text or "").splitlines()
     targets: list[str] = []
@@ -2526,6 +2886,7 @@ def share_clear_credentials() -> dict:
                 if t:
                     targets.append(t)
     steps.append(f"发现 {len(targets)} 条凭据条目")
+    _progress(steps[-1])
     removed = 0
     for t in targets:
         # 只删明显是网络共享的
@@ -2549,6 +2910,7 @@ def share_clear_credentials() -> dict:
         if c == 0:
             removed += 1
             steps.append(f"已删除: {t}")
+            _progress(steps[-1])
         else:
             # 有的目标需要去掉前缀再删
             if "target=" in t:
@@ -2557,8 +2919,10 @@ def share_clear_credentials() -> dict:
                 if c2 == 0:
                     removed += 1
                     steps.append(f"已删除: {short}")
+                    _progress(steps[-1])
     if removed == 0:
         steps.append("未删除条目（可能没有过期共享凭据，或需手动在「凭据管理器」清理）")
+        _progress(steps[-1])
     suggestions = [
         f"已清理 {removed} 条凭据",
         "请重新访问共享并输入正确账号密码（勾选记住）",
@@ -3069,36 +3433,32 @@ def share_full_repair() -> dict:
     if not _is_admin():
         return _network_result(False, ["需要管理员权限"], suggestions=["请以管理员运行"])
 
-    steps.append("=== 1/6 设为专用网络 ===")
-    r1 = share_fix_private_profile()
-    steps.extend(r1.get("steps") or [])
+    # 子步骤内部已实时刷过的行，外层 _absorb 不再重复刷
+    def _absorb(title: str, fn) -> None:
+        _step(steps, title)
+        result = fn() if callable(fn) else fn
+        for s in result.get("steps") or []:
+            if s:
+                steps.append(str(s))
 
-    steps.append("=== 2/6 网络发现服务 ===")
-    r2 = share_fix_discovery()
-    steps.extend(r2.get("steps") or [])
+    _absorb("=== 1/6 设为专用网络 ===", share_fix_private_profile)
+    _absorb("=== 2/6 网络发现服务 ===", share_fix_discovery)
+    _absorb("=== 3/6 防火墙放行 ===", share_fix_firewall)
+    _absorb("=== 4/6 SMB 服务重启 ===", share_restart_smb_services)
+    _absorb("=== 5/6 Win11/NAS 来宾与签名 ===", share_fix_win11_nas)
+    _absorb("=== 6/6 清理过期凭据 ===", share_clear_credentials)
 
-    steps.append("=== 3/6 防火墙放行 ===")
-    r3 = share_fix_firewall()
-    steps.extend(r3.get("steps") or [])
-
-    steps.append("=== 4/6 SMB 服务重启 ===")
-    r4 = share_restart_smb_services()
-    steps.extend(r4.get("steps") or [])
-
-    steps.append("=== 5/6 Win11/NAS 来宾与签名 ===")
-    r5 = share_fix_win11_nas()
-    steps.extend(r5.get("steps") or [])
-
-    steps.append("=== 6/6 清理过期凭据 ===")
-    r6 = share_clear_credentials()
-    steps.extend(r6.get("steps") or [])
-
-    steps.append("=== 修复后诊断 ===")
+    _step(steps, "=== 修复后诊断 ===")
+    _progress("正在诊断共享状态…")
     diag = share_diagnose()
-    steps.extend((diag.get("steps") or [])[:18])
+    for s in (diag.get("steps") or [])[:18]:
+        if s:
+            steps.append(str(s))
+            _progress(str(s))
 
     suggestions = list(diag.get("suggestions") or [])
     suggestions.insert(0, "全面修复已完成；请用 \\\\对方IP\\共享名 测试（比电脑名更稳）")
+    _progress("共享全面修复完成")
     return _network_result(
         True,
         steps,
@@ -3645,7 +4005,7 @@ def _json_api_main(argv: list[str]) -> int:
     if "--json-file" in argv:
         i = argv.index("--json-file")
         if i + 1 < len(argv):
-            raw = Path(argv[i + 1]).read_text(encoding="utf-8")
+            raw = Path(argv[i + 1]).read_text(encoding="utf-8-sig")
     elif "--json" in argv:
         i = argv.index("--json")
         if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
@@ -3663,8 +4023,8 @@ def _json_api_main(argv: list[str]) -> int:
         return 2
 
     cmd = str(req.get("cmd") or "").strip()
-    api = Api()
     try:
+        api = DesktopApi()
         if cmd == "network_diagnose":
             result = api.network_diagnose()
         elif cmd == "network_fix_wifi":

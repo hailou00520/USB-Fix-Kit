@@ -16,6 +16,7 @@ public sealed class LocalApiServer : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private bool _busy;
+    private List<object>? _lastFolderLockers;
 
     public int Port { get; } = 17890;
     public string BaseUrl => $"http://127.0.0.1:{Port}/";
@@ -75,6 +76,19 @@ public sealed class LocalApiServer : IDisposable
                 return;
             }
 
+            if (path == "/api/browse" && req.HttpMethod == "POST")
+            {
+                // 合并：一次对话框可选文件或文件夹（body 可忽略）
+                var picked = HostUi.BrowsePath();
+                if (string.IsNullOrWhiteSpace(picked))
+                {
+                    await WriteJson(res, new { ok = false, cancelled = true, path = (string?)null });
+                    return;
+                }
+                await WriteJson(res, new { ok = true, path = picked });
+                return;
+            }
+
             if (path == "/api/logs" && req.HttpMethod == "GET")
             {
                 await HandleSse(res);
@@ -87,6 +101,15 @@ public sealed class LocalApiServer : IDisposable
                 var body = await reader.ReadToEndAsync();
                 using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
                 var action = doc.RootElement.TryGetProperty("action", out var a) ? a.GetString() ?? "" : "";
+                string? folderPath = doc.RootElement.TryGetProperty("path", out var pe) ? pe.GetString() : null;
+                int[]? pids = null;
+                if (doc.RootElement.TryGetProperty("pids", out var pd) && pd.ValueKind == JsonValueKind.Array)
+                {
+                    pids = pd.EnumerateArray()
+                        .Where(x => x.ValueKind == JsonValueKind.Number)
+                        .Select(x => x.GetInt32())
+                        .ToArray();
+                }
 
                 if (_busy)
                 {
@@ -99,14 +122,17 @@ public sealed class LocalApiServer : IDisposable
                     _busy = true;
                     BroadcastLog($"开始时间  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
                     BroadcastLog("");
-                    await RunAction(action);
+                    await RunAction(action, folderPath, pids);
                     BroadcastLog("");
                     BroadcastLog(action == "check"
                         ? "检查完成（未修改系统）。"
                         : action.StartsWith("tc", StringComparison.Ordinal)
-                            ? "畅通匣操作完成。"
+                            ? "操作完成。"
                             : "完成 — 请重启电脑测试键鼠。");
-                    await WriteJson(res, new { ok = true, message = "完成" });
+                    if (action == "tcFolderScan" && _lastFolderLockers != null)
+                        await WriteJson(res, new { ok = true, message = "完成", lockers = _lastFolderLockers });
+                    else
+                        await WriteJson(res, new { ok = true, message = "完成" });
                 }
                 catch (Exception ex)
                 {
@@ -136,7 +162,7 @@ public sealed class LocalApiServer : IDisposable
         }
     }
 
-    private async Task RunAction(string action)
+    private async Task RunAction(string action, string? folderPath = null, int[]? pids = null)
     {
         var ct = CancellationToken.None;
         switch (action)
@@ -158,7 +184,6 @@ public sealed class LocalApiServer : IDisposable
                 await _engine.RunDeployBootCheckAsync(RequireDrive(), ct);
                 break;
             case "remote":
-                // PE 需要系统盘；Windows 内可直接修当前机（传占位盘符即可）
                 if (RepairEngine.IsPeEnvironment())
                     _engine.RunRemoteDeploy(RequireDrive());
                 else
@@ -170,6 +195,9 @@ public sealed class LocalApiServer : IDisposable
             case "winFix":
                 await _engine.RunWinUsbFixAsync(ct);
                 break;
+            case "usbBoot":
+                await _engine.RunEnsureUsbBootAsync(ct);
+                break;
             case "uninstall":
                 _engine.UninstallBootCheck();
                 break;
@@ -179,24 +207,25 @@ public sealed class LocalApiServer : IDisposable
                 var report = Path.Combine(drive, "usb_fix_report.txt");
                 var check = Path.Combine(drive, "usb_check_report.txt");
                 var log = Path.Combine(drive, "usb_fix_log.txt");
-
-                // 旧版极简「USB 控制器: 异常」会一直误导人 → 打开前先改写成说明
                 RepairEngine.RewriteObsoleteFixReportIfNeeded(report, check);
 
-                // 只打开「给人看的」报告：优先完整检查；修复报告仅在新格式时打开
+                // 优先打开「最新」的白话报告，避免一直打开过期的 check
                 string? target = null;
-                if (File.Exists(check)) target = check;
-                else if (File.Exists(report) && RepairEngine.IsHumanReadableReport(report)) target = report;
-                else if (File.Exists(log)) target = log;
+                var candidates = new List<(string path, DateTime t)>();
+                if (File.Exists(check)) candidates.Add((check, File.GetLastWriteTime(check)));
+                if (File.Exists(report) && RepairEngine.IsHumanReadableReport(report))
+                    candidates.Add((report, File.GetLastWriteTime(report)));
+                if (candidates.Count > 0)
+                    target = candidates.OrderByDescending(x => x.t).First().path;
+                else if (File.Exists(log))
+                    target = log;
 
                 if (target == null)
-                    throw new FileNotFoundException("还没有报告。请先点「仅检查问题（完整）」生成白话报告。");
-
+                    throw new FileNotFoundException("还没有报告。请先点「检查并急救开机键鼠」生成白话报告。");
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(target) { UseShellExecute = true });
-                BroadcastLog($"已打开: {target}");
+                BroadcastLog($"已打开: {target}（{File.GetLastWriteTime(target):HH:mm:ss}）");
                 break;
             }
-            // 畅通匣（不删 USB 设备 / 不写 Enum\\USB）
             case "tcNetDiagnose":
                 await RunTongchang("network_diagnose");
                 break;
@@ -233,9 +262,45 @@ public sealed class LocalApiServer : IDisposable
             case "tcShareNas":
                 await RunTongchang("share_fix_win11_nas");
                 break;
-            case "tcLaunchGui":
-                LaunchTongchangGui();
+            case "tcFolderScan":
+            {
+                if (string.IsNullOrWhiteSpace(folderPath))
+                    throw new ArgumentException("请填写要扫描的文件夹或文件路径");
+                _lastFolderLockers = null;
+                var root = await RunTongchangResult("scan", new Dictionary<string, object?> { ["path"] = folderPath });
+                var list = new List<object>();
+                if (root.TryGetProperty("note", out var noteEl))
+                {
+                    var note = noteEl.GetString();
+                    if (!string.IsNullOrWhiteSpace(note))
+                        BroadcastLog(note);
+                }
+                if (root.TryGetProperty("lockers", out var lockers) && lockers.ValueKind == JsonValueKind.Array)
+                {
+                    BroadcastLog($"占用进程: {lockers.GetArrayLength()} 个");
+                    foreach (var L in lockers.EnumerateArray())
+                    {
+                        var pid = L.TryGetProperty("pid", out var p) ? p.GetInt32() : 0;
+                        var name = L.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                        var reason = L.TryGetProperty("reason", out var r) ? r.GetString() ?? "" : "";
+                        var exe = L.TryGetProperty("exe_path", out var ep) ? ep.GetString() ?? "" : "";
+                        BroadcastLog($"  PID {pid}  {name}  {reason}");
+                        if (pid > 0) list.Add(new { pid, name, reason, exe_path = exe });
+                    }
+                }
+                _lastFolderLockers = list;
                 break;
+            }
+            case "tcFolderKill":
+            {
+                if (pids == null || pids.Length == 0)
+                    throw new ArgumentException("没有要结束的进程 PID");
+                await RunTongchang("kill", new Dictionary<string, object?>
+                {
+                    ["pids"] = pids
+                });
+                break;
+            }
             default:
                 throw new InvalidOperationException($"未知操作: {action}");
         }
@@ -243,48 +308,21 @@ public sealed class LocalApiServer : IDisposable
 
     private async Task RunTongchang(string cmd, Dictionary<string, object?>? extra = null)
     {
+        _ = await RunTongchangResult(cmd, extra);
+    }
+
+    private async Task<JsonElement> RunTongchangResult(string cmd, Dictionary<string, object?>? extra = null)
+    {
         if (RepairEngine.IsPeEnvironment())
-            throw new InvalidOperationException("畅通匣功能需在正常 Windows 下使用（PE 请用 USB 急救）。");
+            throw new InvalidOperationException("网络 / 共享 / 占用功能需在正常 Windows 下使用（PE 请用「USB」页）。");
         var runner = new TongchangRunner(BroadcastLog);
         var root = await runner.RunAsync(cmd, extra);
         if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
         {
-            var msg = root.TryGetProperty("error", out var e) ? e.GetString() : "畅通匣返回失败";
-            throw new InvalidOperationException(msg ?? "畅通匣返回失败");
+            var msg = root.TryGetProperty("error", out var e) ? e.GetString() : "操作失败";
+            throw new InvalidOperationException(msg ?? "操作失败");
         }
-    }
-
-    private void LaunchTongchangGui()
-    {
-        var baseDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
-        var candidates = new[]
-        {
-            Path.Combine(baseDir, "畅通匣.exe"),
-            Path.Combine(baseDir, "畅通匣", "畅通匣.exe"),
-            Path.Combine(baseDir, "畅通匣", "unlock_folder.py"),
-        };
-        var hit = candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("未找到 畅通匣.exe / unlock_folder.py");
-
-        if (hit.EndsWith(".py", StringComparison.OrdinalIgnoreCase))
-        {
-            var py = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "Python", "Python312", "python.exe");
-            if (!File.Exists(py)) py = "python";
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = py,
-                Arguments = $"\"{hit}\"",
-                WorkingDirectory = Path.GetDirectoryName(hit)!,
-                UseShellExecute = true,
-            });
-        }
-        else
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(hit) { UseShellExecute = true });
-        }
-        BroadcastLog("已启动畅通匣独立窗口");
+        return root;
     }
 
     private static string RequireDrive()

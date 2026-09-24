@@ -73,72 +73,39 @@ public sealed class RepairEngine
             if (report.Attention.Count > 0)
             {
                 Log("");
-                Log($"◇ 提示（{report.Attention.Count}）— 键鼠正常通常可忽略：");
+                Log($"◇ 开机风险（{report.Attention.Count}）— USB 服务未按开机必起配置：");
                 for (var i = 0; i < report.Attention.Count; i++)
                     Log($"  {i + 1}. {report.Attention[i]}");
             }
             if (report.Critical.Count == 0)
             {
                 Log("");
-                Log("结论: 无严重问题。提示项多为「与修复建议值不同」，你电脑能用就不用管。");
+                if (report.Attention.Count == 0)
+                    Log("结论: 未发现严重问题，开机相关服务也已到位。");
+                else
+                    Log("结论: 发现开机风险。急救箱不会只写报告——下面自动写入开机必起。");
             }
             else
             {
                 Log("");
-                Log("结论: 存在严重问题。本操作未做修改，需要时请点修复按钮。");
+                Log("结论: 存在严重问题。请继续用 PE「穷尽修复」或本机「全面体检修复」。");
             }
+        }
+
+        // 急救立场：检查出开机风险就立刻写死
+        if (!IsPeEnvironment() && report.Attention.Count > 0)
+        {
+            Log("");
+            Log("======== 急救自动处理 ========");
+            await RunEnsureUsbBootAsync(ct);
+            // 写入后再扫一遍，报告要反映「已修好」的现状
+            report = await Task.Run(() => UsbDiagnostics.ScanLive(Log), ct);
         }
 
         try
         {
-            var reportDir = IsPeEnvironment()
-                ? FindWindowsDrive() ?? Environment.CurrentDirectory
-                : (Environment.GetEnvironmentVariable("SystemDrive") ?? "C:");
-            var path = Path.Combine(reportDir.TrimEnd('\\') + "\\", "usb_check_report.txt");
-            var sb = new StringBuilder();
-            sb.AppendLine("========================================");
-            sb.AppendLine(" USB 完整检查结果说明（给人看的）");
-            sb.AppendLine($" 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            sb.AppendLine($" 模式: {(IsPeEnvironment() ? "PE 离线检查（只读，未改系统）" : "当前 Windows（只读，未改系统）")}");
-            sb.AppendLine("========================================");
-            sb.AppendLine();
-            sb.AppendLine("【一句话结论】");
-            if (report.Critical.Count == 0)
-            {
-                sb.AppendLine("  没有发现会导致键鼠失效的严重问题。");
-                sb.AppendLine(report.Attention.Count == 0
-                    ? "  可以正常使用。"
-                    : "  下面有一些「提示」，键鼠能用就可以忽略。");
-            }
-            else
-            {
-                sb.AppendLine($"  发现 {report.Critical.Count} 项严重问题（可能导致键鼠/USB 不可用）。");
-                sb.AppendLine("  本检查没有修改任何东西；需要时请回到工具点修复。");
-            }
-            sb.AppendLine();
-            sb.AppendLine("【你要不要管】");
-            if (report.Critical.Count == 0)
-                sb.AppendLine("  不用修。提示项 ≠ 故障。");
-            else
-                sb.AppendLine("  建议先看「严重」列表；确认键鼠异常后再点修复。");
-            sb.AppendLine();
-            sb.AppendLine($"【统计】检查了 {report.CheckedItems} 项 · 严重 {report.Critical.Count} · 提示 {report.Attention.Count}");
-            sb.AppendLine();
-            sb.AppendLine("【严重】（会导致键鼠/USB 失效的项）");
-            if (report.Critical.Count == 0) sb.AppendLine("  （无）");
-            else foreach (var i in report.Critical) sb.AppendLine("  · " + i);
-            sb.AppendLine();
-            sb.AppendLine("【提示】（与建议值不同或需关注；键鼠正常可忽略）");
-            if (report.Attention.Count == 0) sb.AppendLine("  （无）");
-            else foreach (var i in report.Attention) sb.AppendLine("  · " + i);
-            sb.AppendLine();
-            sb.AppendLine("----------------------------------------");
-            sb.AppendLine(" 说明: 「提示」里的 Start=手动/引导 等，只是和修复脚本");
-            sb.AppendLine("       建议值不同，不等于坏了。电脑能用就不用管。");
-            sb.AppendLine($" 本文件: {path}");
-            await File.WriteAllTextAsync(path, sb.ToString(), Encoding.UTF8, ct);
-            // 顺带清掉磁盘上旧的「USB 控制器: 异常」极简摘要，避免再点开误导
-            var fixReport = Path.Combine(reportDir.TrimEnd('\\') + "\\", "usb_fix_report.txt");
+            var path = await WriteHumanCheckReportAsync(report, ct);
+            var fixReport = Path.Combine(Path.GetDirectoryName(path) ?? "C:\\", "usb_fix_report.txt");
             RewriteObsoleteFixReportIfNeeded(fixReport, path);
             Log($"报告已保存: {path}");
         }
@@ -146,6 +113,67 @@ public sealed class RepairEngine
         {
             Log("报告写入失败: " + ex.Message);
         }
+    }
+
+    /// <summary>写出/覆盖 C:\usb_check_report.txt（给人看的白话报告）</summary>
+    public async Task<string> WriteHumanCheckReportAsync(DiagnosisReport report, CancellationToken ct)
+    {
+        var reportDir = IsPeEnvironment()
+            ? FindWindowsDrive() ?? Environment.CurrentDirectory
+            : (Environment.GetEnvironmentVariable("SystemDrive") ?? "C:");
+        var path = Path.Combine(reportDir.TrimEnd('\\') + "\\", "usb_check_report.txt");
+        var sb = new StringBuilder();
+        sb.AppendLine("========================================");
+        sb.AppendLine(" USB 急救检查结果（给人看的）");
+        sb.AppendLine($" 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($" 模式: {(IsPeEnvironment() ? "PE 离线检查" : "当前 Windows")}");
+        sb.AppendLine("========================================");
+        sb.AppendLine();
+        sb.AppendLine("【一句话结论】");
+        if (report.Critical.Count > 0)
+        {
+            sb.AppendLine($"  发现 {report.Critical.Count} 项严重问题。");
+            sb.AppendLine("  请用 PE 点「穷尽修复」，或本机点「深度全面体检修复」。");
+        }
+        else if (report.Attention.Count > 0)
+        {
+            sb.AppendLine("  仍有开机风险（USB 服务启动类型不对）。");
+            sb.AppendLine("  请点「急救：写入开机必起」，然后自行重启验证。");
+        }
+        else
+        {
+            sb.AppendLine("  未发现严重问题，开机相关配置正常。");
+            sb.AppendLine("  自行重启后，在登录界面试键鼠即最终确认。");
+        }
+        sb.AppendLine();
+        sb.AppendLine("【你要做什么】");
+        if (report.Critical.Count > 0)
+            sb.AppendLine("  立刻做修复（PE 穷尽修复 / 本机深度体检），不要拖。");
+        else if (report.Attention.Count > 0)
+        {
+            sb.AppendLine("  1. 点「急救：写入开机必起」。");
+            sb.AppendLine("  2. 自行重启，在登录界面试键盘鼠标。");
+            sb.AppendLine("  3. 若仍失效 → PE「穷尽修复」。");
+        }
+        else
+            sb.AppendLine("  无需再改配置。想确认就自行重启测一次键鼠。");
+        sb.AppendLine();
+        sb.AppendLine($"【统计】检查了 {report.CheckedItems} 项 · 严重 {report.Critical.Count} · 开机风险 {report.Attention.Count}");
+        sb.AppendLine();
+        sb.AppendLine("【严重】");
+        if (report.Critical.Count == 0) sb.AppendLine("  （无）");
+        else foreach (var i in report.Critical) sb.AppendLine("  · " + i);
+        sb.AppendLine();
+        sb.AppendLine("【开机风险】");
+        if (report.Attention.Count == 0) sb.AppendLine("  （无）");
+        else foreach (var i in report.Attention) sb.AppendLine("  · " + i);
+        sb.AppendLine();
+        sb.AppendLine("----------------------------------------");
+        sb.AppendLine(" 说明: 本文件每次检查/急救后都会覆盖更新。");
+        sb.AppendLine("       写入开机必起后须自行重启才生效。");
+        sb.AppendLine($" 本文件: {path}");
+        await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), ct);
+        return path;
     }
 
     private async Task<DiagnosisReport> RunPeCheckAsync(string winDrive, CancellationToken ct)
@@ -342,6 +370,8 @@ public sealed class RepairEngine
     public async Task RunWinUsbFixAsync(CancellationToken ct)
     {
         Log("── Windows USB 全面体检 ──");
+        // 先把开机必起写好，再跑深度脚本（重启留给脚本结束后统一安排）
+        await RunEnsureUsbBootAsync(ct);
 
         var destDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "USBFix");
         Directory.CreateDirectory(destDir);
@@ -357,7 +387,168 @@ public sealed class RepairEngine
         var report = Path.Combine(Environment.GetEnvironmentVariable("SystemDrive") ?? "C:", "usb_fix_report.txt");
         if (File.Exists(report))
             Log(await File.ReadAllTextAsync(report, ct));
+
+        Log("");
+        Log("── 刷新体检报告 ──");
+        try
+        {
+            var after = await Task.Run(() => UsbDiagnostics.ScanLive(Log), ct);
+            var checkPath = await WriteHumanCheckReportAsync(after, ct);
+            Log($"报告已更新: {checkPath}");
+        }
+        catch (Exception ex)
+        {
+            Log("报告刷新失败: " + ex.Message);
+        }
+
+        Log("全面体检完成。请自行重启后再测键鼠（本工具不会自动重启）。");
     }
+
+    /// <summary>
+    /// 当前 Windows：把 USB/键鼠核心服务 Start 写成开机必起（双 ControlSet），
+    /// 并关闭快速启动。不删设备、不写 Enum\USB、不 pnputil。不自动重启。
+    /// </summary>
+    public async Task RunEnsureUsbBootAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Log("── 急救：写入开机必起 ──");
+        Log("把 USB 控制器 / 集线器 / 即插即用 写成开机自动拉起");
+        Log("安全边界：不删除设备、不改 Enum\\USB、不用 pnputil、不自动重启");
+        Log("");
+
+        // Start: 0=引导 1=系统 2=自动 3=手动 4=禁用
+        var starts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["usbxhci"] = 0,
+            ["USBXHCI"] = 0,
+            ["usbhub"] = 1,
+            ["USBHUB"] = 1,
+            ["usbhub3"] = 1,
+            ["USBHUB3"] = 1,
+            ["usbccgp"] = 1,
+            ["PlugPlay"] = 2,
+            ["Wdf01000"] = 0,
+            ["HidUsb"] = 3,
+            ["mouhid"] = 3,
+            ["kbdhid"] = 3,
+            ["kbdclass"] = 3,
+            ["mouclass"] = 3,
+        };
+
+        var sets = new List<string> { "CurrentControlSet" };
+        foreach (var cs in new[] { "ControlSet001", "ControlSet002" })
+        {
+            try
+            {
+                using var k = Registry.LocalMachine.OpenSubKey($@"SYSTEM\{cs}\Services");
+                if (k != null) sets.Add(cs);
+            }
+            catch { /* ignore */ }
+        }
+        sets = sets.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Log($"写入目标: {string.Join(", ", sets)}");
+
+        var changed = 0;
+        var skipped = 0;
+        foreach (var cs in sets)
+        {
+            Log($"── {cs} ──");
+            foreach (var kv in starts)
+            {
+                ct.ThrowIfCancellationRequested();
+                var path = $@"SYSTEM\{cs}\Services\{kv.Key}";
+                try
+                {
+                    using var key = Registry.LocalMachine.OpenSubKey(path, writable: true);
+                    if (key == null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                    var curObj = key.GetValue("Start");
+                    var cur = curObj is int i ? i : (curObj is long l ? (int)l : -1);
+                    if (cur == kv.Value)
+                    {
+                        Log($"  · {kv.Key} Start={kv.Value}({StartLabel(kv.Value)}) 已正确");
+                        continue;
+                    }
+                    key.SetValue("Start", kv.Value, RegistryValueKind.DWord);
+                    changed++;
+                    Log($"  ✓ {kv.Key} Start {cur}({StartLabel(cur)}) → {kv.Value}({StartLabel(kv.Value)})");
+                }
+                catch (Exception ex)
+                {
+                    Log($"  ✗ {kv.Key} 写入失败: {ex.Message}");
+                }
+            }
+        }
+
+        Log("");
+        Log("── sc config 同步 ──");
+        foreach (var (name, start) in new (string, string)[]
+                 {
+                     ("usbxhci", "boot"),
+                     ("usbhub", "system"),
+                     ("usbhub3", "system"),
+                     ("usbccgp", "system"),
+                     ("PlugPlay", "auto"),
+                 })
+        {
+            try
+            {
+                RunCmd($"sc config {name} start= {start}");
+                Log($"  · sc config {name} start= {start}");
+            }
+            catch (Exception ex)
+            {
+                Log($"  · sc config {name}: {ex.Message}");
+            }
+        }
+
+        Log("");
+        Log("── 关闭快速启动 ──");
+        try
+        {
+            using var pwr = Registry.LocalMachine.CreateSubKey(
+                @"SYSTEM\CurrentControlSet\Control\Session Manager\Power");
+            pwr?.SetValue("HiberbootEnabled", 0, RegistryValueKind.DWord);
+            Log("  ✓ HiberbootEnabled = 0（关机后冷启动，避免 USB 假死）");
+        }
+        catch (Exception ex)
+        {
+            Log("  ✗ 快速启动: " + ex.Message);
+        }
+
+        Log("");
+        Log($"急救写入完成：改写 {changed} 项（跳过不存在服务约 {skipped} 次）。");
+        Log("请你自行安排重启后再测键鼠（本工具不会自动重启）。");
+
+        // 立刻刷新白话报告，避免「打开体检报告」还是旧文件
+        try
+        {
+            if (!IsPeEnvironment())
+            {
+                Log("── 刷新体检报告 ──");
+                var after = await Task.Run(() => UsbDiagnostics.ScanLive(_ => { }), ct);
+                var path = await WriteHumanCheckReportAsync(after, ct);
+                Log($"报告已更新: {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("报告刷新失败: " + ex.Message);
+        }
+    }
+
+    private static string StartLabel(int start) => start switch
+    {
+        0 => "引导",
+        1 => "系统",
+        2 => "自动",
+        3 => "手动",
+        4 => "禁用",
+        _ => "?",
+    };
 
     public void UninstallBootCheck()
     {

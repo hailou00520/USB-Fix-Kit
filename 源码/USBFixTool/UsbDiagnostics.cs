@@ -70,7 +70,7 @@ public static class UsbDiagnostics
         var sets = OfflineUsbRegistry.EnumerateControlSets(offlineSysRoot).ToList();
         log("══ 完整检查（PE 离线 / 只读）══");
         log($"ControlSet: {string.Join(", ", sets)}");
-        log("分级: ⚠严重 = 会导致键鼠失效的项；◇提示 = 与修复建议值不同或需关注，键鼠正常可忽略");
+        log("分级: ⚠严重 = 键鼠会挂；◇开机风险 = 启动类型不对，急救箱会自动写死");
         log("");
 
         foreach (var cs in sets)
@@ -144,7 +144,7 @@ public static class UsbDiagnostics
     {
         var r = new DiagnosisReport();
         log("══ 完整检查（当前 Windows / 只读）══");
-        log("分级: ⚠严重 = 会导致键鼠失效的项；◇提示 = 与修复建议值不同或需关注，键鼠正常可忽略");
+        log("分级: ⚠严重 = 键鼠会挂；◇开机风险 = 启动类型不对，急救箱会自动写死");
         log("");
 
         log("── 危险残留服务 ──");
@@ -275,9 +275,9 @@ public static class UsbDiagnostics
 
         if (SuggestedStarts.TryGetValue(svcKey, out var suggest) && start != suggest)
         {
-            var msg = $"{label} Start={start}({StartLabel(start)})，与修复建议 {suggest}({StartLabel(suggest)}) 不同（键鼠正常可忽略）";
+            var msg = $"{label} Start={start}({StartLabel(start)})，与开机必起 {suggest}({StartLabel(suggest)}) 不符 → 将自动写入";
             r.Attention.Add(msg);
-            log($"  ◇ {label} Start={start} ({StartLabel(start)}) — 可用；建议值={suggest}({StartLabel(suggest)})");
+            log($"  ◇ {label} Start={start} ({StartLabel(start)}) → 应改为 {suggest}({StartLabel(suggest)})");
         }
         else
         {

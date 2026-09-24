@@ -84,6 +84,36 @@
     font-family: var(--font-sans);
     overflow: hidden;
   }
+
+  /* 细圆角滚动条，去掉系统箭头，跟主题一致 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(15 118 110 / 0.28) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: rgb(15 118 110 / 0.06);
+    margin: 4px 0;
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(15 118 110 / 0.35);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(15 118 110 / 0.55);
+  }
+  *::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 @keyframes fade-up {
@@ -147,15 +177,13 @@
 @keyframes cta-glow {
   0%, 100% {
     box-shadow:
-      0 2px 4px rgb(15 118 110 / 0.2),
-      0 8px 22px rgb(15 118 110 / 0.28),
-      0 0 0 0 rgb(15 118 110 / 0.25);
+      0 1px 2px rgb(15 118 110 / 0.08),
+      0 4px 12px rgb(15 118 110 / 0.12);
   }
   50% {
     box-shadow:
-      0 4px 10px rgb(15 118 110 / 0.28),
-      0 14px 36px rgb(15 118 110 / 0.38),
-      0 0 0 6px rgb(15 118 110 / 0);
+      0 1px 3px rgb(15 118 110 / 0.1),
+      0 6px 16px rgb(15 118 110 / 0.16);
   }
 }
 @keyframes bar-pulse {
@@ -174,9 +202,9 @@
   80% { transform: translateX(3px); }
 }
 @keyframes success-flash {
-  0% { box-shadow: 0 0 0 0 rgb(15 118 110 / 0.35); }
-  40% { box-shadow: 0 0 0 8px rgb(15 118 110 / 0); }
-  100% { box-shadow: 0 1px 2px rgb(24 24 27 / 0.05), 0 3px 12px rgb(24 24 27 / 0.07); }
+  0% { box-shadow: 0 0 0 0 rgb(15 118 110 / 0.2); }
+  40% { box-shadow: 0 0 0 6px rgb(15 118 110 / 0); }
+  100% { box-shadow: 0 1px 2px rgb(15 118 110 / 0.05), 0 2px 8px rgb(15 118 110 / 0.06); }
 }
 @keyframes grid-drift {
   0% { background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0; }
@@ -278,13 +306,13 @@
     filter 0.25s ease;
 }
 .pressable:hover:not(:disabled) {
-  transform: translateY(-4px);
+  transform: translateY(-1px);
   box-shadow:
-    0 6px 12px rgb(24 24 27 / 0.09),
-    0 16px 32px rgb(24 24 27 / 0.14);
+    0 1px 2px rgb(15 118 110 / 0.06),
+    0 4px 12px rgb(15 118 110 / 0.08);
 }
 .pressable:active:not(:disabled) {
-  transform: translateY(0) scale(0.97);
+  transform: translateY(0) scale(0.985);
 }
 
 .cta-shine {
@@ -450,19 +478,36 @@
   );
 }
 
+/*
+ * 滚轮独立细轨：viewport 只占 content box，padding 留给拇指；
+ * 负 margin 从页面右侧空隙“借位”，卡片外缘仍与顶栏对齐。
+ */
+.scroll-rail {
+  margin-right: -8px;
+  padding-right: 10px;
+}
+.scroll-rail > [data-slot="scroll-area-scrollbar"] {
+  right: 1px;
+}
+/* 日志等带边框容器内：只内缩，不外借 */
+.scroll-rail-inset {
+  padding-right: 10px;
+}
+.scroll-rail-inset > [data-slot="scroll-area-scrollbar"] {
+  right: 2px;
+}
+
 .elevation {
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.75),
-    0 0 0 1px rgb(15 118 110 / 0.05),
-    0 4px 14px rgb(15 118 110 / 0.07),
-    0 1px 3px rgb(15 23 42 / 0.04);
+    inset 0 1px 0 rgb(255 255 255 / 0.65),
+    0 1px 1px rgb(15 118 110 / 0.03),
+    0 2px 6px rgb(15 118 110 / 0.04);
 }
 .elevation-md {
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.55),
-    0 0 0 1px rgb(15 118 110 / 0.08),
-    0 8px 22px rgb(15 118 110 / 0.12),
-    0 2px 6px rgb(15 23 42 / 0.06);
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    0 1px 2px rgb(15 118 110 / 0.05),
+    0 2px 8px rgb(15 118 110 / 0.06);
 }
 
 /* 卡片：半透雾面，吃进背景色温 */

@@ -5,12 +5,19 @@ import { cn } from "@/lib/utils"
 function ScrollArea({
   className,
   children,
+  /** 右侧留独立滚轮轨，避免叠在卡片上；可向右借入父级 padding */
+  rail = false,
+  type = "always",
   ...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.Root>) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
+  rail?: boolean
+}) {
   return (
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
-      className={cn("relative", className)}
+      data-rail={rail || undefined}
+      type={type}
+      className={cn("relative overflow-hidden", rail && "scroll-rail", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
@@ -35,18 +42,18 @@ function ScrollBar({
       data-slot="scroll-area-scrollbar"
       orientation={orientation}
       className={cn(
-        "flex touch-none p-px transition-colors select-none",
+        "flex touch-none transition-colors select-none",
         orientation === "vertical" &&
-          "h-full w-2.5 border-l border-l-transparent",
+          "absolute inset-y-1 right-0.5 z-10 flex w-2.5 justify-center p-px",
         orientation === "horizontal" &&
-          "h-2.5 flex-col border-t border-t-transparent",
+          "h-2.5 flex-col border-t border-t-transparent p-px",
         className
       )}
       {...props}
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="bg-border relative flex-1 rounded-full"
+        className="relative flex-1 rounded-full bg-teal-700/35 hover:bg-teal-700/55"
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

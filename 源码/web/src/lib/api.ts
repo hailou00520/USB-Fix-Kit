@@ -14,6 +14,7 @@ export type ActionId =
   | "remote"
   | "drivers"
   | "winFix"
+  | "usbBoot"
   | "uninstall"
   | "openLog"
   | "tcNetDiagnose"
@@ -28,13 +29,29 @@ export type ActionId =
   | "tcShareFull"
   | "tcShareHosting"
   | "tcShareNas"
-  | "tcLaunchGui"
+  | "tcFolderScan"
+  | "tcFolderKill"
+
+export type ActionExtra = {
+  path?: string
+  pids?: number[]
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || `HTTP ${res.status}`)
+    let msg = text || `HTTP ${res.status}`
+    try {
+      const j = JSON.parse(text) as { message?: string; error?: string }
+      msg = j.message || j.error || msg
+    } catch {
+      /* keep raw */
+    }
+    // 去掉冗长 traceback，只留最后一行有用信息
+    const lines = msg.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    const last = lines[lines.length - 1] || msg
+    throw new Error(last.length > 280 ? `${last.slice(0, 280)}…` : last)
   }
   return res.json() as Promise<T>
 }
@@ -43,11 +60,24 @@ export function getStatus() {
   return request<StatusInfo>("/api/status")
 }
 
-export function runAction(action: ActionId) {
-  return request<{ ok: boolean; message: string }>("/api/action", {
+/** 系统对话框：一次可选文件或文件夹（占用页） */
+export function browsePath() {
+  return request<{ ok: boolean; cancelled?: boolean; path: string | null }>("/api/browse", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: "{}",
+  })
+}
+
+export function runAction(action: ActionId, extra?: ActionExtra) {
+  return request<{
+    ok: boolean
+    message: string
+    lockers?: { pid: number; name: string; reason?: string; exe_path?: string }[]
+  }>("/api/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...extra }),
   })
 }
 

@@ -4,7 +4,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace USBFixTool;
 
-/// <summary>WebView ↔ 无边框窗口：拖动 / 最小化 / 最大化 / 关闭</summary>
+/// <summary>WebView ↔ 无边框窗口：拖动 / 最小化 / 最大化 / 关闭 / 文件拖放路径</summary>
 internal static class WindowChromeBridge
 {
     private const int WmNcLButtonDown = 0xA1;
@@ -18,13 +18,54 @@ internal static class WindowChromeBridge
 
     public static void Attach(Form form, WebView2 webView)
     {
+        // 窗体边缘拖放兜底（标题栏/空白处）
+        form.AllowDrop = true;
+        form.DragEnter += (_, e) =>
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+                e.Effect = DragDropEffects.Copy;
+        };
+        form.DragDrop += (_, e) =>
+        {
+            try
+            {
+                if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                    HostUi.NotifyDroppedPath(webView.CoreWebView2, files[0]);
+            }
+            catch { /* ignore */ }
+        };
+
         void Hook(CoreWebView2 core)
         {
+            try { webView.AllowExternalDrop = true; }
+            catch { /* older runtime */ }
+
             core.WebMessageReceived += (_, e) =>
             {
                 string? msg = null;
                 try { msg = e.TryGetWebMessageAsString(); }
                 catch { }
+
+                // WebView2：前端 postMessageWithAdditionalObjects('FilesDropped', files)
+                if (string.Equals(msg, "FilesDropped", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        foreach (var obj in e.AdditionalObjects)
+                        {
+                            // CoreWebView2File.Path（运行时类型名因版本而异，用反射更稳）
+                            var pathProp = obj?.GetType().GetProperty("Path");
+                            var path = pathProp?.GetValue(obj) as string;
+                            if (!string.IsNullOrWhiteSpace(path))
+                            {
+                                form.BeginInvoke(() => HostUi.NotifyDroppedPath(core, path!));
+                                break;
+                            }
+                        }
+                    }
+                    catch { /* ignore */ }
+                    return;
+                }
 
                 if (string.IsNullOrEmpty(msg)) return;
 

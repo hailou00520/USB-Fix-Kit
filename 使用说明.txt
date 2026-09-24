@@ -1,24 +1,18 @@
-﻿目录说明
+目录说明
 ========
 
-【唯一成品】发布\
-  USB急救工具.exe     ← 主程序（USB 急救 + 畅通匣 切换）
-  畅通匣.exe          ← 畅通匣独立窗口（可选）
-  畅通匣\unlock_folder.py  ← 畅通匣后端脚本（需本机 Python，或用上面的 exe）
-  wwwroot\
-  Remote\
-  lib\
-  Assets\
-  PE_一键启动.bat
-  使用说明.txt
+【唯一成品】发布\USB急救工具.exe
+  一个程序，四个页签：USB · 网络 · 共享 · 占用
+  （原「畅通匣」功能已并入，不再单独运行第二个软件）
 
-整夹拷到 U 盘即可。
+同目录还需：
+  wwwroot\              界面
+  畅通匣\unlock_folder.py   网络/共享/占用后端（需本机 Python 3）
+  lib\  Remote\  Assets\
+  PE_一键启动.bat
+
+整夹拷到 U 盘即可。不要再放「畅通匣.exe」副本。
 
 【源码】源码\ + 编译.bat → 输出到 发布\
 
-【模式】
-  USB 急救 — PE / Windows 修键鼠 USB
-  畅通匣   — 正常 Windows 下修 WiFi / 共享（不删 USB 设备）
-
-【PE】
-  双击 USB急救工具.exe 或 PE_一键启动.bat
+【PE】只用「USB」页；网络/共享/占用需进正常 Windows。

@@ -15,7 +15,7 @@ public sealed class MainForm : Form
     {
         _api = api;
         _fallbackToNative = fallbackToNative;
-        Text = "USB 急救工具";
+        Text = "急救工具";
         Size = new Size(780, 720);
         MinimumSize = new Size(640, 560);
         StartPosition = FormStartPosition.CenterScreen;
@@ -47,6 +47,7 @@ public sealed class MainForm : Form
         Controls.Add(_fallback);
 
         FormRoundCorners.Attach(this);
+        HostUi.Bind(this);
         WindowChromeBridge.Attach(this, _webView);
 
         Shown += async (_, _) => await InitWebView();

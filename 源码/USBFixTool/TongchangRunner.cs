@@ -27,7 +27,8 @@ public sealed class TongchangRunner
         _log($"畅通匣 · {cmd}");
 
         var tmp = Path.Combine(Path.GetTempPath(), $"tc_{Guid.NewGuid():N}.json");
-        await File.WriteAllTextAsync(tmp, json, Encoding.UTF8, ct);
+        // .NET Encoding.UTF8 默认带 BOM，Python json.loads(utf-8) 会炸；写无 BOM
+        await File.WriteAllTextAsync(tmp, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), ct);
         try
         {
             var psi = new ProcessStartInfo
@@ -42,34 +43,105 @@ public sealed class TongchangRunner
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            // 实时刷 stderr 进度，避免要等整段跑完才有日志
+            psi.Environment["PYTHONUNBUFFERED"] = "1";
+            psi.Environment["PYTHONIOENCODING"] = "utf-8";
+            psi.Environment["PYTHONUTF8"] = "1";
 
             using var proc = new Process { StartInfo = psi };
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
-            proc.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
-            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+            var sawProgress = 0;
+            long lastProgressAt = Environment.TickCount64;
+
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null) stdout.AppendLine(e.Data);
+            };
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null) return;
+                stderr.AppendLine(e.Data);
+                // Python _progress → ":: 文本"
+                if (e.Data.StartsWith(":: ", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref sawProgress);
+                    Interlocked.Exchange(ref lastProgressAt, Environment.TickCount64);
+                    _log(e.Data[3..]);
+                }
+            };
 
             if (!proc.Start())
                 throw new InvalidOperationException("无法启动畅通匣后端");
 
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
-            await proc.WaitForExitAsync(ct);
+
+            // 总时限：共享/网络全面修复不应无限挂死
+            const int overallSeconds = 180;
+            using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            overallCts.CancelAfter(TimeSpan.FromSeconds(overallSeconds));
+
+            // 超过 25s 没新进度才写一次心跳（少刷）
+            var heartbeat = Task.Run(async () =>
+            {
+                var n = 0;
+                while (!proc.HasExited)
+                {
+                    try { await Task.Delay(25000, overallCts.Token); }
+                    catch (OperationCanceledException) { return; }
+                    if (proc.HasExited) return;
+                    n++;
+                    var idle = Environment.TickCount64 - Volatile.Read(ref lastProgressAt);
+                    if (idle >= 25000)
+                        _log($"…当前子步骤仍在跑（已约 {n * 25}s）");
+                }
+            }, overallCts.Token);
+
+            try
+            {
+                await proc.WaitForExitAsync(overallCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _log($"错误: 畅通匣超时（>{overallSeconds}s），正在强制结束…");
+                try
+                {
+                    using var kill = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "taskkill",
+                        Arguments = $"/F /T /PID {proc.Id}",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    });
+                    kill?.WaitForExit(8000);
+                }
+                catch { /* ignore */ }
+                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                throw new InvalidOperationException($"畅通匣执行超时（>{overallSeconds} 秒）。请重试；若反复超时，可改点单项修复。");
+            }
+            try { await heartbeat; } catch { /* ignore */ }
 
             var text = stdout.ToString().Trim();
             if (string.IsNullOrWhiteSpace(text))
             {
                 var err = stderr.ToString().Trim();
-                throw new InvalidOperationException(string.IsNullOrEmpty(err)
+                // 去掉已刷过的进度行，只留真正错误
+                var errLines = err.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(l => !l.StartsWith(":: ", StringComparison.Ordinal))
+                    .ToArray();
+                var errClean = string.Join("\n", errLines);
+                throw new InvalidOperationException(string.IsNullOrEmpty(errClean)
                     ? $"畅通匣无输出 (exit {proc.ExitCode})"
-                    : err);
+                    : errClean);
             }
 
             var line = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Last();
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement.Clone();
 
-            if (root.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
+            // 已实时刷过进度则不再把 steps 整段重打；只补建议/错误
+            if (sawProgress == 0 && root.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
             {
                 foreach (var s in steps.EnumerateArray())
                 {
@@ -77,6 +149,7 @@ public sealed class TongchangRunner
                     if (!string.IsNullOrWhiteSpace(t)) _log(t!);
                 }
             }
+
             if (root.TryGetProperty("suggestions", out var sug) && sug.ValueKind == JsonValueKind.Array)
             {
                 foreach (var s in sug.EnumerateArray())
