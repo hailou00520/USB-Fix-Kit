@@ -1,18 +1,24 @@
-怎么用
+﻿目录说明
 ========
 
-唯一程序：本目录 USB急救工具.exe（最终版）
+【唯一成品】发布\
+  USB急救工具.exe     ← 主程序（USB 急救 + 畅通匣 切换）
+  畅通匣.exe          ← 畅通匣独立窗口（可选）
+  畅通匣\unlock_folder.py  ← 畅通匣后端脚本（需本机 Python，或用上面的 exe）
+  wwwroot\
+  Remote\
+  lib\
+  Assets\
+  PE_一键启动.bat
+  使用说明.txt
+
+整夹拷到 U 盘即可。
+
+【源码】源码\ + 编译.bat → 输出到 发布\
+
+【模式】
+  USB 急救 — PE / Windows 修键鼠 USB
+  畅通匣   — 正常 Windows 下修 WiFi / 共享（不删 USB 设备）
 
 【PE】
-  双击 USB急救工具.exe 或 PE_一键启动.bat（管理员）
-  → 点「穷尽修复 + 自动部署远程自启」
-  → 拔盘重启，干看着
-
-【远程】
-  Remote\ 已含 ToDesk_Lite.exe（精简版）
-  需要时点「部署远程软件自启」；可自行换成别的绿色版
-
-【备用】
-  PE_UsbDk离线补USB服务.bat
-  PE_部署远程自启.bat
-  PE_原地升级避坑.txt
+  双击 USB急救工具.exe 或 PE_一键启动.bat
