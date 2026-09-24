@@ -7,7 +7,8 @@ function ScrollArea({
   children,
   /** 右侧留独立滚轮轨，避免叠在卡片上；可向右借入父级 padding */
   rail = false,
-  type = "always",
+  /** 仅长列表/日志需要常显；其它区域保持 hover 才出现，避免满屏丑条 */
+  type = "hover",
   ...props
 }: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
   rail?: boolean
@@ -16,6 +17,7 @@ function ScrollArea({
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
       data-rail={rail || undefined}
+      data-type={type}
       type={type}
       className={cn("relative overflow-hidden", rail && "scroll-rail", className)}
       {...props}
@@ -26,7 +28,7 @@ function ScrollArea({
       >
         {children}
       </ScrollAreaPrimitive.Viewport>
-      <ScrollBar />
+      <ScrollBar always={type === "always"} />
       <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
   )
@@ -35,8 +37,11 @@ function ScrollArea({
 function ScrollBar({
   className,
   orientation = "vertical",
+  always = false,
   ...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar> & {
+  always?: boolean
+}) {
   return (
     <ScrollAreaPrimitive.ScrollAreaScrollbar
       data-slot="scroll-area-scrollbar"
@@ -44,16 +49,27 @@ function ScrollBar({
       className={cn(
         "flex touch-none transition-colors select-none",
         orientation === "vertical" &&
-          "absolute inset-y-1 right-0.5 z-10 flex w-2.5 justify-center p-px",
+          cn(
+            "absolute inset-y-1 right-0.5 z-10 flex justify-center",
+            always ? "w-2 p-px" : "w-1.5"
+          ),
         orientation === "horizontal" &&
-          "h-2.5 flex-col border-t border-t-transparent p-px",
+          cn(
+            "flex-col border-t border-t-transparent p-px",
+            always ? "h-2" : "h-1.5"
+          ),
         className
       )}
       {...props}
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-teal-700/35 hover:bg-teal-700/55"
+        className={cn(
+          "relative flex-1 rounded-full",
+          always
+            ? "bg-teal-700/40 hover:bg-teal-700/60"
+            : "bg-primary/30 hover:bg-primary/50"
+        )}
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

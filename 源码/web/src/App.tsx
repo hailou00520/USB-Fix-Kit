@@ -769,7 +769,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <ScrollArea rail className="h-[min(32vh,280px)]">
+                <ScrollArea rail type="always" className="h-[min(32vh,280px)]">
                   <ul className="divide-y divide-border/70 pr-1">
                     {lockers.map((L) => {
                       const checked = selectedPids.includes(L.pid)
@@ -995,7 +995,7 @@ export default function App() {
             </CardHeader>
 
             <CardContent className="flex min-h-0 flex-1 flex-col gap-2 px-3.5 py-2.5">
-              <ScrollArea rail className="scroll-rail-inset h-0 min-h-0 flex-1 rounded-md border border-primary/10 bg-white/45">
+              <ScrollArea rail type="always" className="scroll-rail-inset h-0 min-h-0 flex-1 rounded-md border border-primary/10 bg-white/45">
                 <div className="space-y-0.5 p-3 font-mono text-[11.5px] leading-5 text-zinc-600">
                   {logs.length === 0 ? (
                     <div className="flex min-h-[6.5rem] flex-col justify-center gap-1.5 py-1">
