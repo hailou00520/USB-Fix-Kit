@@ -14,6 +14,8 @@ import {
   Zap,
   Terminal,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Search,
   Minus,
   Square,
@@ -63,13 +65,99 @@ type ActionItem = {
 }
 
 const ACTIONS: ActionItem[] = [
+  // ── PE 媒介：只有这些在真 PE 里能修盘 / 写自启 ──
   {
     id: "full",
-    title: "穷尽修复（不含远程）",
-    description: "补 USB · 清 UsbDk · 开机自修。远程自启请用独立按钮「部署远程软件自启」。",
+    title: "① 穷尽修复并部署合并自修",
+    description:
+      "媒介主流程·不需网：离线修 ImagePath/UsbDk → 写 USB+网开机自修 → 进 Windows 全屏自跑",
     icon: <Zap className="size-5" />,
     featured: true,
     peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "deploy",
+    title: "部署合并自修（USB+网）",
+    description: "开机自跑键鼠/USB + 有线网（推荐两边都死时）",
+    icon: <Wrench className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "deployUsb",
+    title: "仅部署键鼠/USB 自修",
+    description: "开机只穷尽修 USB/键鼠，不跑救网",
+    icon: <Usb className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "deployNet",
+    title: "仅部署救网自修",
+    description: "开机专修有线网卡/DHCP（网活即可远程接手）",
+    icon: <Wifi className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "remote",
+    title: "部署远程软件自启",
+    description: "部署时不需网；进系统后要上网才能连。没网请先部署救网",
+    icon: <MonitorSmartphone className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "check",
+    title: "仅检查问题",
+    description: "只读体检，不修改（PE 离线检目标盘）",
+    icon: <Search className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "usbdk",
+    title: "UsbDk / ImagePath 离线补丁",
+    description: "双 ControlSet · 清过滤 · 修 usbxhci ImagePath",
+    icon: <Bug className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "usb",
+    title: "离线 USB 深度修复",
+    description: "注册表双集 · DISM · SFC（不含写自启；要自启请点①）",
+    icon: <Usb className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "account",
+    title: "解除账号 · 自动登录",
+    description: "启用 Administrator · 空密码，保证进系统后自修能跑",
+    icon: <Shield className="size-4" />,
+    peOnly: true,
+    mode: "usb",
+  },
+  {
+    id: "drivers",
+    title: "删除第三方 USB 驱动",
+    description: "清理 vivo / 小米等冲突 oem",
+    icon: <Trash2 className="size-4" />,
+    danger: true,
+    peOnly: true,
+    mode: "usb",
+  },
+  // ── 正常 Windows ──
+  {
+    id: "winFix",
+    title: "立即全面自动修复",
+    description:
+      "键鼠+网络全自动（离线）：ImagePath/问题码39 · USB控制器 · 有线网卡 · 穷尽阶段（不自动重启）",
+    icon: <Play className="size-5" />,
+    featured: true,
+    winOnly: true,
     mode: "usb",
   },
   {
@@ -77,70 +165,22 @@ const ACTIONS: ActionItem[] = [
     title: "检查并急救开机键鼠",
     description: "完整体检；若发现开机风险，自动写入开机必起（不自动重启）",
     icon: <Search className="size-4" />,
-    mode: "usb",
-  },
-  {
-    id: "remote",
-    title: "部署远程软件自启",
-    description: "独立功能：复制绿版、清安全标记、只用 bat 自启（不把 exe 放进 Startup，避免弹窗）",
-    icon: <MonitorSmartphone className="size-4" />,
-    mode: "usb",
-  },
-  {
-    id: "usbdk",
-    title: "UsbDk 专项离线补服务",
-    description: "双 ControlSet · 清过滤驱动 · 补 usbxhci / hub Start",
-    icon: <Bug className="size-4" />,
-    peOnly: true,
-    mode: "usb",
-  },
-  {
-    id: "usb",
-    title: "离线修复 USB",
-    description: "注册表双集 · DISM · SFC",
-    icon: <Usb className="size-4" />,
-    peOnly: true,
-    mode: "usb",
-  },
-  {
-    id: "account",
-    title: "解除账号自动登录",
-    description: "启用 Administrator · 空密码进桌面",
-    icon: <Shield className="size-4" />,
-    peOnly: true,
-    mode: "usb",
-  },
-  {
-    id: "deploy",
-    title: "仅部署 USB 开机自检",
-    description: "写入穷尽修复脚本到 Windows 自启",
-    icon: <Wrench className="size-4" />,
-    peOnly: true,
-    mode: "usb",
-  },
-  {
-    id: "drivers",
-    title: "删除第三方驱动",
-    description: "清理 USB / vivo / Mi 等冲突 oem 驱动",
-    icon: <Trash2 className="size-4" />,
-    danger: true,
-    peOnly: true,
+    winOnly: true,
     mode: "usb",
   },
   {
     id: "usbBoot",
     title: "急救：写入开机必起",
-    description: "立刻把 USB/键鼠服务写成开机必起 · 关快速启动（不自动重启）",
+    description: "立刻写 USB/键鼠 Start · 修 ImagePath · 关快速启动（不自动重启）",
     icon: <Shield className="size-5" />,
-    featured: true,
     winOnly: true,
     mode: "usb",
   },
   {
-    id: "winFix",
-    title: "深度全面体检修复",
-    description: "开机必起 + UsbDk/注册表深度清理（不自动重启）",
-    icon: <Play className="size-4" />,
+    id: "remote",
+    title: "部署远程软件自启",
+    description: "复制绿版、清安全标记、bat 自启（进系统后需能上网才连得上）",
+    icon: <MonitorSmartphone className="size-4" />,
     winOnly: true,
     mode: "usb",
   },
@@ -205,7 +245,7 @@ const ACTIONS: ActionItem[] = [
   {
     id: "tcNetFull",
     title: "网络全面修复",
-    description: "服务软重启 → 协议栈（不碰 USB）",
+    description: "有线优先硬复位/DHCP → WiFi 服务 → 协议栈（离线·不碰 USB）",
     icon: <Wrench className="size-4" />,
     winOnly: true,
     mode: "net",
@@ -297,7 +337,13 @@ export default function App() {
   const [selectedPids, setSelectedPids] = useState<number[]>([])
   const [dropOver, setDropOver] = useState(false)
   const [scannedOnce, setScannedOnce] = useState(false)
+  const [autoSec, setAutoSec] = useState<number | null>(null)
+  /** 日志抽屉：空闲收起让按钮完整可见；开跑自动展开，也可手动开关 */
+  const [logExpanded, setLogExpanded] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const autoStartedRef = useRef(false)
+  const busyRef = useRef(false)
+  const onActionRef = useRef<(id: ActionId, extra?: ActionExtra) => Promise<void>>(async () => {})
 
   const applyFolderPath = useCallback((p: string) => {
     const t = p.trim().replace(/^["']|["']$/g, "")
@@ -401,12 +447,22 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [logs])
 
-  const onAction = async (id: ActionId, extra?: ActionExtra) => {
-    if (busy) return
+  useEffect(() => {
+    if (busy) setLogExpanded(true)
+  }, [busy])
+
+  useEffect(() => {
+    if (mode === "folder") setLogExpanded(true)
+  }, [mode])
+
+  const onAction = useCallback(async (id: ActionId, extra?: ActionExtra) => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setDone(false)
     setError(null)
     setLogs([])
+    setAutoSec(null)
     try {
       const res = await runAction(id, extra)
       if (!res.ok) throw new Error(res.message)
@@ -425,15 +481,96 @@ export default function App() {
       await refresh()
     } catch (e) {
       const msg = e instanceof Error ? e.message : "操作失败"
-      // 错误写进日志流，不再单独弹红框挤压日志区
       setLogs((prev) => [...prev, `错误: ${msg}`])
       setError(msg)
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
-  }
+  }, [refresh])
+
+  useEffect(() => {
+    onActionRef.current = onAction
+  }, [onAction])
+
+  // 键鼠已废 或 --autofix：自动倒计时开修（不用点）；键鼠正常则不打扰
+  useEffect(() => {
+    if (!status || status.isPe) return
+    if (autoStartedRef.current || busyRef.current) return
+    const q = new URLSearchParams(window.location.search)
+    const force = q.get("autofix") === "1" || !!status.autoFix
+    const broken = !!status.inputBroken
+    if (!force && !broken) return
+    setAutoSec(force ? 3 : 8)
+    if (broken && status.inputReason) {
+      setLogs((prev) =>
+        prev.some((l) => l.includes("键鼠失灵探测"))
+          ? prev
+          : [...prev, `键鼠失灵探测: ${status.inputReason}`]
+      )
+    }
+  }, [status])
+
+  useEffect(() => {
+    if (autoSec === null) return
+    if (autoSec <= 0) {
+      if (autoStartedRef.current || busyRef.current) {
+        setAutoSec(null)
+        return
+      }
+      autoStartedRef.current = true
+      setAutoSec(null)
+      setMode("usb")
+      setLogs((prev) => [...prev, "══ 键鼠失灵模式：自动开始全面修复 ══"])
+      void onActionRef.current("winFix")
+      return
+    }
+    const t = window.setTimeout(() => {
+      setAutoSec((s) => (s === null ? null : s - 1))
+    }, 1000)
+    return () => window.clearTimeout(t)
+  }, [autoSec])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return
+
+      if (e.key === "Escape" && autoSec !== null) {
+        e.preventDefault()
+        setAutoSec(null)
+        setLogs((prev) => [...prev, "已取消自动修复倒计时（仍可按 Enter / F5 开始）"])
+        return
+      }
+
+      if (busyRef.current) return
+
+      if (e.key === "Enter" || e.key === "F5" || e.key === "F1") {
+        e.preventDefault()
+        setAutoSec(null)
+        autoStartedRef.current = true
+        setMode("usb")
+        void onActionRef.current("winFix")
+        return
+      }
+
+      // 数字键切页（有键盘时）；PE 只有 USB 页
+      if (e.key === "1") setMode("usb")
+      if (status?.isPe) return
+      if (e.key === "2") setMode("net")
+      if (e.key === "3") setMode("share")
+      if (e.key === "4") setMode("folder")
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [autoSec, status?.isPe])
 
   const isPe = status?.isPe ?? true
+
+  useEffect(() => {
+    if (isPe && mode !== "usb") setMode("usb")
+  }, [isPe, mode])
+
   const visible = ACTIONS.filter((a) => {
     if (a.mode !== mode) return false
     if (a.peOnly && !isPe) return false
@@ -448,13 +585,17 @@ export default function App() {
     a.mode === "usb" && (!!a.peOnly || (a.id === "check" && isPe) || (a.id === "remote" && isPe))
 
   const modeTitle: Record<KitMode, string> = {
-    usb: "USB 修复",
+    usb: isPe ? "PE 媒介急救" : "USB 修复",
     net: "网络 / WiFi",
     share: "文件共享",
     folder: "解除占用",
   }
   const modeDesc: Record<KitMode, string> = {
-    usb: "急救键鼠 / USB：查出风险就写死开机必起",
+    usb: isPe
+      ? status?.pePreview
+        ? "仅预览界面 · 点修复会提示无效 · 真急救请 U 盘进 PE"
+        : "本软件当媒介：可选 USB / 救网 / 合并 开机自修 → 拔盘重启进 Windows 自跑（不需网）"
+      : "急救键鼠 / USB：查出风险就写死开机必起",
     net: "诊断与安全修复 WiFi（不删 USB 设备）",
     share: "本机共享、NAS / Win11 来宾等",
     folder: "扫描并结束占用文件夹的进程",
@@ -473,6 +614,68 @@ export default function App() {
 
   return (
     <div className="relative flex h-full flex-col">
+      {autoSec !== null && !busy && (
+        <div
+          className="animate-fade-up fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/55 px-6 backdrop-blur-[2px]"
+          role="dialog"
+          aria-label="键鼠失灵自动修复"
+        >
+          <div className="w-full max-w-lg rounded-xl border border-teal-700/30 bg-white/95 p-6 text-center shadow-2xl elevation-md">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-teal-800">
+              键鼠失灵急救
+            </p>
+            <p
+              className="mt-2 text-4xl font-semibold tabular-nums tracking-tight text-teal-950"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              {autoSec}
+              <span className="ml-1 text-lg font-medium text-teal-800/80">秒</span>
+            </p>
+            <p className="mt-2 text-[15px] font-medium text-zinc-800">
+              {status?.inputBroken
+                ? "检测到键鼠已失灵 —— 即将自动全面修复，什么都不用点"
+                : "即将自动「全面自动修复」—— 不用点鼠标"}
+            </p>
+            <p className="mt-3 space-y-1 text-[12px] leading-relaxed text-zinc-500">
+              <span className="block">
+                有键盘：<kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px]">Enter</kbd>
+                {" / "}
+                <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px]">F5</kbd>
+                {" 立刻开始 · "}
+                <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px]">Esc</kbd>
+                {" 取消倒计时"}
+              </span>
+              <span className="block">键鼠都废了：什么都不用做，倒计时结束会自己修</span>
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              <Button
+                type="button"
+                className="h-10 min-w-[8rem] px-4"
+                autoFocus
+                onClick={() => {
+                  setAutoSec(null)
+                  autoStartedRef.current = true
+                  setMode("usb")
+                  void onAction("winFix")
+                }}
+              >
+                立刻开始
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 min-w-[8rem] px-4"
+                onClick={() => {
+                  setAutoSec(null)
+                  setLogs((prev) => [...prev, "已取消自动修复倒计时（仍可按 Enter / F5 开始）"])
+                }}
+              >
+                取消 Esc
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="pointer-events-none fixed inset-0 bg-app">
         <span className="orb orb-a" />
         <span className="orb orb-b" />
@@ -480,7 +683,7 @@ export default function App() {
       </div>
 
       <div
-        className="relative flex h-full w-full min-h-0 flex-1 flex-col gap-3 p-4"
+        className="relative flex h-full w-full min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pt-4 pb-5"
         onMouseDown={onDragDown}
       >
         <Card
@@ -495,134 +698,139 @@ export default function App() {
             </div>
           )}
           <CardHeader className="space-y-0 px-3.5 py-3">
-            {/* 第一行：标题 ←→ 状态/窗口按钮，固定行高垂直居中 */}
-            <div className="grid h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+            {/* 合并前布局：左标题说明 · 右状态/窗控，目标盘贴在其正下方 */}
+            <div className="flex flex-row flex-wrap items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2.5">
                 <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-accent/40">
                   <img src="./icon.png" alt="" width={36} height={36} className="size-full object-cover" />
                 </div>
-                <div className="min-w-0 leading-none">
+                <div className="min-w-0 space-y-0.5">
                   <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-primary">
                     一体化急救工具
                   </p>
                   <CardTitle
-                    className="mt-0.5 truncate text-lg leading-none tracking-tight"
+                    className="truncate text-lg leading-none tracking-tight"
                     style={{ fontFamily: "var(--font-display)" }}
                   >
                     {modeTitle[mode]}
                   </CardTitle>
+                  <CardDescription className="truncate text-[12px] leading-snug">
+                    {modeDesc[mode]}
+                  </CardDescription>
                 </div>
               </div>
 
-              <div className="flex h-7 items-center gap-1.5" data-no-drag>
-                <Badge
-                  variant="secondary"
+              <div className="flex flex-col items-end gap-1.5" data-no-drag>
+                <div className="flex h-7 items-center gap-1.5">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      "animate-chrome-in inline-flex h-7 items-center gap-1.5 rounded-md border-0 px-2 text-[11px] font-normal leading-none",
+                      isPe
+                        ? "bg-sky-50 text-sky-800 hover:bg-sky-50"
+                        : "bg-teal-50 text-teal-800 hover:bg-teal-50"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full animate-pulse-dot",
+                        isPe ? "bg-sky-500" : "bg-teal-600"
+                      )}
+                    />
+                    {isPe ? (status?.pePreview ? "PE 预览" : "PE") : "Windows"}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="animate-chrome-in animate-chrome-in-d1 size-7 shrink-0 rounded-md"
+                    onClick={refresh}
+                    disabled={busy}
+                    title="刷新"
+                  >
+                    <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+                  </Button>
+                  {inHost && (
+                    <div className="animate-chrome-in animate-chrome-in-d2 flex h-7 items-stretch overflow-hidden rounded-md border bg-muted/50">
+                      <button
+                        type="button"
+                        title="最小化"
+                        className="win-btn win-btn-compact"
+                        onClick={() => hostCmd("minimize")}
+                      >
+                        <Minus className="size-3.5" strokeWidth={1.75} />
+                      </button>
+                      <button
+                        type="button"
+                        title={maximized ? "还原" : "最大化"}
+                        className="win-btn win-btn-compact"
+                        onClick={() => hostCmd("maximize")}
+                      >
+                        {maximized ? (
+                          <Copy className="size-3" strokeWidth={1.75} />
+                        ) : (
+                          <Square className="size-3" strokeWidth={1.75} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        title="关闭"
+                        className="win-btn win-btn-compact win-btn-close"
+                        onClick={() => hostCmd("close")}
+                      >
+                        <X className="size-3.5" strokeWidth={1.75} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <p
+                  key={status?.drive ?? "none"}
                   className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-md border-0 px-2 text-[11px] font-normal leading-none",
-                    isPe
-                      ? "bg-sky-50 text-sky-800 hover:bg-sky-50"
-                      : "bg-teal-50 text-teal-800 hover:bg-teal-50"
+                    "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] leading-none",
+                    status?.drive
+                      ? "animate-drive-in bg-teal-50/80 text-teal-900"
+                      : "animate-drive-miss text-muted-foreground"
                   )}
                 >
-                  <span
-                    className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      isPe ? "bg-sky-500" : "bg-teal-600"
-                    )}
-                  />
-                  {isPe ? "PE" : "Windows"}
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-7 shrink-0 rounded-md"
-                  onClick={refresh}
-                  disabled={busy}
-                  title="刷新"
-                >
-                  <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
-                </Button>
-                {inHost && (
-                  <div className="flex h-7 items-stretch overflow-hidden rounded-md border bg-muted/50">
-                    <button
-                      type="button"
-                      title="最小化"
-                      className="win-btn win-btn-compact"
-                      onClick={() => hostCmd("minimize")}
-                    >
-                      <Minus className="size-3.5" strokeWidth={1.75} />
-                    </button>
-                    <button
-                      type="button"
-                      title={maximized ? "还原" : "最大化"}
-                      className="win-btn win-btn-compact"
-                      onClick={() => hostCmd("maximize")}
-                    >
-                      {maximized ? (
-                        <Copy className="size-3" strokeWidth={1.75} />
-                      ) : (
-                        <Square className="size-3" strokeWidth={1.75} />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      title="关闭"
-                      className="win-btn win-btn-compact win-btn-close"
-                      onClick={() => hostCmd("close")}
-                    >
-                      <X className="size-3.5" strokeWidth={1.75} />
-                    </button>
-                  </div>
-                )}
+                  {status?.drive ? (
+                    <>
+                      <HardDrive className="size-3 shrink-0 text-teal-700" strokeWidth={1.75} />
+                      <span className="text-teal-700/80">目标盘</span>
+                      <span className="animate-drive-letter font-semibold tracking-wide text-teal-950">
+                        {status.drive}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <HardDrive className="size-3 shrink-0 opacity-60" strokeWidth={1.75} />
+                      未检测到系统盘
+                    </>
+                  )}
+                  {status && !status.isAdmin ? (
+                    <span className="text-amber-700"> · 需管理员</span>
+                  ) : null}
+                </p>
               </div>
             </div>
 
-            {/* 第二行：说明 + 目标盘，同一行高基线 */}
-            <div className="mt-2 grid h-6 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-              <CardDescription className="min-w-0 truncate text-[12px] leading-none">
-                {modeDesc[mode]}
-              </CardDescription>
-              <p
-                key={status?.drive ?? "none"}
-                className={cn(
-                  "inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] leading-none",
-                  status?.drive
-                    ? "bg-teal-50/80 text-teal-900"
-                    : "text-muted-foreground"
-                )}
-              >
-                <HardDrive className="size-3 shrink-0 opacity-70" strokeWidth={1.75} />
-                {status?.drive ? (
-                  <>
-                    <span className="opacity-70">目标盘</span>
-                    <span className="font-semibold tracking-wide">{status.drive}</span>
-                  </>
-                ) : (
-                  "未检测到系统盘"
-                )}
-                {status && !status.isAdmin ? (
-                  <span className="text-amber-700"> · 需管理员</span>
-                ) : null}
-              </p>
-            </div>
-
-            {/* 第三行：页签左对齐，等高 */}
+            {/* 页签：PE 只留 USB（媒介页）；网络/共享/占用在正常 Windows */}
             <div className="mt-2.5 flex h-7 items-center gap-1" data-no-drag>
               {(
-                [
-                  ["usb", "USB"],
-                  ["net", "网络"],
-                  ["share", "共享"],
-                  ["folder", "占用"],
-                ] as const
+                (
+                  isPe
+                    ? ([["usb", "USB"]] as const)
+                    : ([
+                        ["usb", "USB"],
+                        ["net", "网络"],
+                        ["share", "共享"],
+                        ["folder", "占用"],
+                      ] as const)
+                )
               ).map(([id, label]) => {
-                const disabled = busy || (id !== "usb" && isPe)
                 return (
                   <button
                     key={id}
                     type="button"
-                    disabled={disabled}
-                    title={id !== "usb" && isPe ? "需在正常 Windows 下使用" : undefined}
+                    disabled={busy}
                     onClick={() => {
                       setMode(id)
                       setLogs([])
@@ -633,8 +841,7 @@ export default function App() {
                       "inline-flex h-7 items-center rounded-md px-2.5 text-[11px] font-medium leading-none transition-colors",
                       mode === id
                         ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:bg-muted/80",
-                      disabled && id !== "usb" && "opacity-50"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
                     )}
                   >
                     {label}
@@ -722,8 +929,8 @@ export default function App() {
         )}
 
         {mode === "folder" && !isPe && scannedOnce && (
-          <Card data-no-drag className="shrink-0 gap-0 overflow-hidden rounded-lg border-border/80 py-0 elevation">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b px-3.5 py-2">
+          <Card data-no-drag className="min-h-0 shrink gap-0 overflow-hidden rounded-lg border-border/80 py-0 elevation">
+            <CardHeader className="flex shrink-0 flex-row items-center justify-between space-y-0 border-b px-3.5 py-2">
               <div>
                 <CardTitle className="text-[13px]">占用进程</CardTitle>
                 <CardDescription className="text-[10px]">
@@ -769,7 +976,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <ScrollArea rail type="always" className="h-[min(32vh,280px)]">
+                <ScrollArea rail type="always" className="h-[min(28vh,220px)]">
                   <ul className="divide-y divide-border/70 pr-1">
                     {lockers.map((L) => {
                       const checked = selectedPids.includes(L.pid)
@@ -823,24 +1030,11 @@ export default function App() {
           </Card>
         )}
 
-        {/* 操作区按内容高度；按钮多才滚动。日志吃掉剩余空间，避免中间空一大块 */}
-        <div data-no-drag className="flex min-h-0 flex-1 flex-col gap-3">
-          {mode !== "folder" && (
-          <div
-            className={cn(
-              "min-h-0",
-              mode === "net" || mode === "share"
-                ? "max-h-[46%] shrink overflow-hidden"
-                : "shrink-0"
-            )}
-          >
-            <ScrollArea
-              rail={mode === "net" || mode === "share"}
-              className={cn(
-                mode === "net" || mode === "share" ? "h-full max-h-[min(46vh,420px)]" : "h-auto"
-              )}
-            >
-              <div className="flex flex-col gap-2.5">
+        {/* 操作区铺满；日志收起=底栏不挡，展开=整面盖住操作区（不半遮） */}
+        <div data-no-drag className="relative min-h-0 flex-1">
+          {mode !== "folder" && (() => {
+            const actionsBody = (
+              <div className="flex flex-col gap-2 pr-1 pb-4">
                 {featured.map((a) => (
                   <button
                     key={a.id}
@@ -856,7 +1050,7 @@ export default function App() {
                     )}
                   >
                     <span className="cta-bar absolute inset-y-0 left-0 w-1 bg-teal-300/80" />
-                    <div className="relative grid grid-cols-[2.25rem_1fr_auto] items-center gap-3 px-3.5 py-3 pl-5">
+                    <div className="relative grid grid-cols-[2.25rem_1fr_auto] items-center gap-3 px-3.5 py-2.5 pl-5">
                       <span className="cta-icon flex size-9 items-center justify-center rounded-md bg-white/15">
                         {busy ? <Loader2 className="size-4 animate-spin" /> : a.icon}
                       </span>
@@ -869,7 +1063,7 @@ export default function App() {
                             推荐
                           </Badge>
                         </div>
-                        <p className="text-[12px] leading-snug text-primary-foreground/80">
+                        <p className="line-clamp-2 text-[12px] leading-snug text-primary-foreground/80">
                           {a.description}
                         </p>
                       </div>
@@ -884,12 +1078,14 @@ export default function App() {
                 ))}
 
                 {rest.length > 0 && (
-                  <section className="animate-fade-up animate-fade-up-delay-2 space-y-3">
-                    <div className="flex h-6 items-center justify-between">
+                  <section className="animate-fade-up animate-fade-up-delay-2 space-y-2">
+                    <div className="flex h-5 items-center justify-between gap-2 pr-0.5">
                       <h2 className="text-xs font-medium text-muted-foreground">更多操作</h2>
-                      <span className="text-[11px] tabular-nums text-muted-foreground">{rest.length} 项</span>
+                      <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                        {rest.length} 项 · 上下滑看全
+                      </span>
                     </div>
-                    <div className="grid gap-2.5 sm:grid-cols-2">
+                    <div className="grid gap-2 sm:grid-cols-2">
                       {rest.map((a) => (
                         <button
                           key={a.id}
@@ -897,7 +1093,7 @@ export default function App() {
                           disabled={busy || (needsDrive(a) && !status?.drive)}
                           onClick={() => onAction(a.id)}
                           className={cn(
-                            "stagger-item pressable card-shine surface-card group grid grid-cols-[2rem_1fr] items-center gap-2.5 rounded-lg border p-3.5 text-left elevation",
+                            "stagger-item pressable card-shine surface-card group grid grid-cols-[2rem_1fr] items-start gap-2 rounded-lg border px-3 py-2.5 text-left elevation",
                             "hover:border-primary/25 hover:elevation-md",
                             "disabled:pointer-events-none disabled:opacity-50",
                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -906,7 +1102,7 @@ export default function App() {
                         >
                           <span
                             className={cn(
-                              "flex size-8 items-center justify-center rounded-md border",
+                              "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border",
                               a.danger
                                 ? "border-destructive/20 bg-destructive/5 text-destructive"
                                 : "bg-muted text-muted-foreground"
@@ -923,7 +1119,7 @@ export default function App() {
                             >
                               {a.title}
                             </span>
-                            <span className="block text-[11px] leading-snug text-muted-foreground">
+                            <span className="line-clamp-2 block text-[11px] leading-snug text-muted-foreground">
                               {a.description}
                             </span>
                           </span>
@@ -933,121 +1129,226 @@ export default function App() {
                   </section>
                 )}
               </div>
-            </ScrollArea>
-          </div>
+            )
+            return (
+              <div
+                className={cn(
+                  "absolute inset-x-0 top-0 overflow-hidden",
+                  logExpanded ? "bottom-0 opacity-0 pointer-events-none" : "bottom-12"
+                )}
+                aria-hidden={logExpanded}
+              >
+                <ScrollArea
+                  key={`actions-${mode}-${isPe ? "pe" : "win"}`}
+                  rail
+                  type="always"
+                  className="h-full"
+                >
+                  {actionsBody}
+                </ScrollArea>
+              </div>
+            )
+          })()}
+
+          {/* 收起：底栏一条，不挡按钮 */}
+          {!logExpanded && (
+            <button
+              type="button"
+              data-no-drag
+              onClick={() => setLogExpanded(true)}
+              className={cn(
+                "absolute inset-x-0 bottom-0 z-10 flex h-11 items-center gap-2 rounded-lg border border-border/80 bg-card/95 px-3.5 text-left elevation backdrop-blur-sm",
+                "hover:bg-muted/50"
+              )}
+              title="展开日志（整面覆盖）"
+            >
+              <span className="flex w-5 shrink-0 justify-center">
+                <span className="h-1 w-8 rounded-full bg-muted-foreground/35" />
+              </span>
+              <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md border bg-muted", busy && "animate-pulse")}>
+                <Terminal className={cn("size-3 text-primary", busy && "animate-spin")} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="text-[13px] font-semibold leading-none">输出日志</span>
+                  {busy && (
+                    <Badge variant="secondary" className="h-4 gap-1 rounded-sm px-1.5 text-[10px] font-normal">
+                      <Loader2 className="size-2.5 animate-spin" />
+                      运行中
+                    </Badge>
+                  )}
+                  {done && !busy && !error && (
+                    <Badge className="h-4 gap-1 rounded-sm border-0 bg-teal-50 px-1.5 text-[10px] text-teal-800 hover:bg-teal-50">
+                      <CheckCircle2 className="size-2.5" />
+                      完成
+                    </Badge>
+                  )}
+                  {error && !busy && (
+                    <Badge
+                      variant="secondary"
+                      className="h-4 max-w-[6rem] truncate rounded-sm border-0 bg-destructive/10 px-1.5 text-[10px] font-normal text-destructive"
+                      title={error}
+                    >
+                      失败
+                    </Badge>
+                  )}
+                </span>
+                <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                  {logs.length > 0
+                    ? logs[logs.length - 1]
+                    : "点开整面覆盖 · 点修复后会自动打开"}
+                </span>
+              </span>
+              <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+            </button>
           )}
 
-          <Card
-            className={cn(
-              "animate-fade-up animate-fade-up-delay-3 flex min-h-[11rem] flex-1 flex-col gap-0 overflow-hidden rounded-lg border-border/80 py-0 elevation",
-              done && !busy && "animate-success-flash"
-            )}
-          >
-            <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 space-y-0 border-b px-3.5 py-2.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md border bg-muted", busy && "animate-pulse")}>
-                  <Terminal className={cn("size-3 text-primary", busy && "animate-spin")} />
-                </span>
-                <div className="min-w-0">
-                  <CardTitle className="text-[13px]">输出日志</CardTitle>
-                  <CardDescription className="truncate text-[10px]">
-                    {canOpenReport ? "进度在此 · 白话报告点右侧打开" : "实时修复进度"}
-                  </CardDescription>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {busy && (
-                  <Badge variant="secondary" className="gap-1 rounded-sm text-[11px] font-normal">
-                    <Loader2 className="size-3 animate-spin" />
-                    运行中
-                  </Badge>
-                )}
-                {done && !busy && !error && (
-                  <Badge className="animate-badge-pop gap-1 rounded-sm border-0 bg-teal-50 text-[11px] text-teal-800 hover:bg-teal-50">
-                    <CheckCircle2 className="size-3" />
-                    完成
-                  </Badge>
-                )}
-                {error && !busy && (
-                  <Badge
-                    variant="secondary"
-                    className="max-w-[8rem] truncate rounded-sm border-0 bg-destructive/10 text-[11px] font-normal text-destructive"
-                    title={error}
-                  >
-                    失败
-                  </Badge>
-                )}
-                {canOpenReport && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void onAction("openLog")}
-                    className="h-7 gap-1 rounded-md border-primary/20 bg-white/70 px-2 text-[11px] font-medium text-foreground shadow-none hover:border-primary/35 hover:bg-teal-50/80"
-                    title="打开最新白话体检报告"
-                  >
-                    <FileText className="size-3.5 text-primary" />
-                    打开报告
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-2 px-3.5 py-2.5">
-              <ScrollArea rail type="always" className="scroll-rail-inset h-0 min-h-0 flex-1 rounded-md border border-primary/10 bg-white/45">
-                <div className="space-y-0.5 p-3 font-mono text-[11.5px] leading-5 text-zinc-600">
-                  {logs.length === 0 ? (
-                    <div className="flex min-h-[6.5rem] flex-col justify-center gap-1.5 py-1">
-                      <p className="text-[12.5px] font-medium text-zinc-800">等待操作…</p>
-                      <div className="space-y-1 text-zinc-500">
-                        <p className="tip-item">
-                          <span className="mr-2 text-teal-700">01</span>
-                          点上方推荐按钮开始
-                        </p>
-                        <p className="tip-item">
-                          <span className="mr-2 text-teal-700">02</span>
-                          进度会实时写在这里
-                        </p>
-                        <p className="tip-item">
-                          <span className="mr-2 text-teal-700">03</span>
-                          {mode === "usb"
-                            ? "做完后点右上「打开报告」看白话结论"
-                            : "结果会显示在本日志区"}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    logs.map((line, i) => (
-                      <div
-                        key={`${i}-${line.slice(0, 24)}`}
-                        className={cn(
-                          "animate-log-in",
-                          line.startsWith("错误") || line.startsWith("✗")
-                            ? "text-red-600"
-                            : line.includes("完成") ||
-                                line.startsWith("✓") ||
-                                line.includes("成功")
-                              ? "text-teal-700"
-                              : line.startsWith("══") || line.startsWith("──")
-                                ? "text-zinc-900"
-                                : undefined
-                        )}
-                      >
-                        {line || "\u00A0"}
-                      </div>
-                    ))
+          {/* 展开：整面盖住操作区，不半遮按钮 */}
+          {logExpanded && (
+            <Card
+              key={`log-panel-${mode}`}
+              className={cn(
+                "absolute inset-0 z-20 flex flex-col gap-0 overflow-hidden rounded-lg border-border/80 bg-card py-0 elevation",
+                "animate-fade-up"
+              )}
+            >
+              {done && !busy && !error && (
+                <div
+                  aria-hidden
+                  className="animate-success-flash pointer-events-none absolute inset-0 z-0 rounded-lg"
+                />
+              )}
+              <div className="relative z-[1] flex h-11 shrink-0 items-center gap-2 border-b px-3.5">
+                <button
+                  type="button"
+                  data-no-drag
+                  onClick={() => setLogExpanded(false)}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left hover:opacity-90"
+                  title="收起日志，回到操作"
+                  disabled={mode === "folder"}
+                >
+                  <span className="flex w-5 shrink-0 justify-center">
+                    <span className="h-1 w-8 rounded-full bg-muted-foreground/35" />
+                  </span>
+                  <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md border bg-muted", busy && "animate-pulse")}>
+                    <Terminal className={cn("size-3 text-primary", busy && "animate-spin")} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-[13px] font-semibold leading-none">输出日志</span>
+                      {busy && (
+                        <Badge variant="secondary" className="h-4 gap-1 rounded-sm px-1.5 text-[10px] font-normal">
+                          <Loader2 className="size-2.5 animate-spin" />
+                          运行中
+                        </Badge>
+                      )}
+                      {done && !busy && !error && (
+                        <Badge className="h-4 gap-1 rounded-sm border-0 bg-teal-50 px-1.5 text-[10px] text-teal-800 hover:bg-teal-50">
+                          <CheckCircle2 className="size-2.5" />
+                          完成
+                        </Badge>
+                      )}
+                      {error && !busy && (
+                        <Badge
+                          variant="secondary"
+                          className="h-4 max-w-[6rem] truncate rounded-sm border-0 bg-destructive/10 px-1.5 text-[10px] font-normal text-destructive"
+                          title={error}
+                        >
+                          失败
+                        </Badge>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                      {mode === "folder" ? "占用页日志" : "整面覆盖中 · 点此或右侧返回操作"}
+                    </span>
+                  </span>
+                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {canOpenReport && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void onAction("openLog")}
+                      className="h-7 gap-1 rounded-md border-primary/20 bg-white/70 px-2 text-[11px] font-medium shadow-none hover:border-primary/35 hover:bg-teal-50/80"
+                      title="打开最新白话体检报告"
+                    >
+                      <FileText className="size-3.5 text-primary" />
+                      报告
+                    </Button>
                   )}
-                  <div ref={bottomRef} />
+                  {mode !== "folder" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7 gap-1 px-2 text-[11px]"
+                      onClick={() => setLogExpanded(false)}
+                      title="收起日志"
+                    >
+                      <ChevronDown className="size-3.5" />
+                      返回
+                    </Button>
+                  )}
                 </div>
-              </ScrollArea>
-              <p className="shrink-0 text-center text-[10px] text-muted-foreground">
-                {mode === "usb"
-                  ? "修好后拔 U 盘重启 · 进系统请干看着"
-                  : "同一程序内功能 · 网络/占用不删 USB 设备"}
-              </p>
-            </CardContent>
-          </Card>
+              </div>
+
+              <CardContent className="relative z-[1] flex min-h-0 flex-1 flex-col gap-2 px-3.5 pb-3 pt-2.5">
+                <ScrollArea rail type="always" className="scroll-rail-inset h-0 min-h-0 flex-1 rounded-md border border-primary/10 bg-white/45">
+                  <div className="space-y-0.5 p-3 font-mono text-[11.5px] leading-5 text-zinc-600">
+                    {logs.length === 0 ? (
+                      <div className="flex min-h-[10rem] flex-col justify-center gap-1.5 py-2">
+                        <p className="text-[12.5px] font-medium text-zinc-800">等待操作…</p>
+                        <div className="space-y-1 text-zinc-500">
+                          <p className="tip-item">
+                            <span className="mr-2 text-teal-700">01</span>
+                            点「返回」回到按钮；开始修复后会自动打开本页
+                          </p>
+                          <p className="tip-item">
+                            <span className="mr-2 text-teal-700">02</span>
+                            进度会实时写在这里（整面覆盖，不再挡半截按钮）
+                          </p>
+                          <p className="tip-item">
+                            <span className="mr-2 text-teal-700">03</span>
+                            {mode === "usb"
+                              ? "修好后拔 U 盘重启 · 进系统请干看着"
+                              : "结果会显示在本日志区"}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      logs.map((line, i) => (
+                        <div
+                          key={`${i}-${line.slice(0, 24)}`}
+                          className={cn(
+                            "animate-log-in",
+                            line.startsWith("错误") || line.startsWith("✗")
+                              ? "text-red-600"
+                              : line.includes("完成") ||
+                                  line.startsWith("✓") ||
+                                  line.includes("成功")
+                                ? "text-teal-700"
+                                : line.startsWith("══") || line.startsWith("──")
+                                  ? "text-zinc-900"
+                                  : undefined
+                          )}
+                        >
+                          {line || "\u00A0"}
+                        </div>
+                      ))
+                    )}
+                    <div ref={bottomRef} />
+                  </div>
+                </ScrollArea>
+                <p className="shrink-0 text-center text-[10px] text-muted-foreground">
+                  {mode === "usb"
+                    ? "修好后拔 U 盘重启 · 进系统请干看着"
+                    : "同一程序内功能 · 网络/占用不删 USB 设备"}
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

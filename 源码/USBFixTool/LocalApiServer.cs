@@ -32,6 +32,46 @@ public sealed class LocalApiServer : IDisposable
         _cts = new CancellationTokenSource();
         _listener.Start();
         _loop = Task.Run(() => AcceptLoop(_cts.Token));
+        // 键鼠全废时界面可能点不了：若前端 15 秒内没开修，后端兜底自动跑
+        _ = Task.Run(() => HandsFreeFallbackAsync(_cts.Token));
+    }
+
+    private async Task HandsFreeFallbackAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(15000, ct);
+            if (ct.IsCancellationRequested || RepairEngine.IsPeEnvironment()) return;
+            if (_busy) return;
+
+            var force = Program.AutoFix;
+            var broken = InputHealth.LooksBroken(out var reason);
+            if (!force && !broken) return;
+            if (_busy) return;
+
+            _busy = true;
+            try
+            {
+                BroadcastLog("");
+                BroadcastLog(force
+                    ? "══ 无人值守兜底：--autofix 自动全面修复 ══"
+                    : $"══ 无人值守兜底：{reason} → 自动全面修复 ══");
+                BroadcastLog("开始时间  " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                await RunAction("winFix");
+                BroadcastLog("");
+                BroadcastLog("完成 — 请自行重启后再测键鼠（本工具不会自动重启）。");
+            }
+            catch (Exception ex)
+            {
+                BroadcastLog("错误  " + ex.Message);
+            }
+            finally
+            {
+                _busy = false;
+            }
+        }
+        catch (OperationCanceledException) { /* shutdown */ }
+        catch { /* ignore */ }
     }
 
     private async Task AcceptLoop(CancellationToken ct)
@@ -67,11 +107,21 @@ public sealed class LocalApiServer : IDisposable
 
             if (path == "/api/status" && req.HttpMethod == "GET")
             {
+                var inputBroken = false;
+                var inputReason = "";
+                var isPe = Program.IsPeMode;
+                if (!isPe)
+                    inputBroken = InputHealth.LooksBroken(out inputReason);
+
                 await WriteJson(res, new
                 {
-                    isPe = RepairEngine.IsPeEnvironment(),
+                    isPe,
                     drive = RepairEngine.FindWindowsDrive(),
-                    isAdmin = IsAdmin()
+                    isAdmin = IsAdmin(),
+                    inputBroken,
+                    inputReason,
+                    autoFix = Program.AutoFix,
+                    pePreview = Program.ForcePeUi && !RepairEngine.IsPeEnvironment()
                 });
                 return;
             }
@@ -114,6 +164,16 @@ public sealed class LocalApiServer : IDisposable
                 if (_busy)
                 {
                     await WriteJson(res, new { ok = false, message = "已有任务在运行" }, 409);
+                    return;
+                }
+
+                if (IsPePreviewHiveAction(action))
+                {
+                    var msg =
+                        "当前是 PE 界面预览（正常 Windows），不能挂载正在使用的系统注册表。" +
+                        "真急救：U 盘进 PE 后打开本软件，再点「穷尽修复并部署开机自修」。";
+                    BroadcastLog($"错误  {msg}");
+                    await WriteJson(res, new { ok = false, message = msg }, 400);
                     return;
                 }
 
@@ -181,7 +241,13 @@ public sealed class LocalApiServer : IDisposable
                 await _engine.RunAccountUnlockAsync(RequireDrive(), ct);
                 break;
             case "deploy":
-                await _engine.RunDeployBootCheckAsync(RequireDrive(), ct);
+                await _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Both, ct);
+                break;
+            case "deployUsb":
+                await _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Usb, ct);
+                break;
+            case "deployNet":
+                await _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Net, ct);
                 break;
             case "remote":
                 if (RepairEngine.IsPeEnvironment())
@@ -330,6 +396,13 @@ public sealed class LocalApiServer : IDisposable
         var d = RepairEngine.FindWindowsDrive();
         if (d == null) throw new InvalidOperationException("未找到 Windows 系统盘");
         return d;
+    }
+
+    /// <summary>PE 预览下禁止离线挂 hive / 写目标盘急救（会撞到本机已加载的 SOFTWARE）。</summary>
+    private static bool IsPePreviewHiveAction(string action)
+    {
+        if (!(Program.ForcePeUi && !RepairEngine.IsPeEnvironment())) return false;
+        return action is "full" or "usb" or "usbdk" or "account" or "deploy" or "deployUsb" or "deployNet" or "remote" or "drivers";
     }
 
     private async Task HandleSse(HttpListenerResponse res)

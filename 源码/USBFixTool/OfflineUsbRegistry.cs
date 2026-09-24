@@ -70,6 +70,14 @@ public static class OfflineUsbRegistry
             foreach (var kv in ServiceStarts)
                 runReg($@"add ""{offlineSysRoot}\{cs}\Services\{kv.Key}"" /v Start /t REG_DWORD /d {kv.Value} /f");
 
+            log($"── {cs}: 修复损坏 ImagePath（双 SystemRoot）──");
+            foreach (var (svc, sys) in UsbDriverImagePath.Targets)
+            {
+                if (!ServiceStarts.ContainsKey(svc)) continue;
+                var svcPath = $@"{offlineSysRoot}\{cs}\Services\{svc}";
+                runReg($@"add ""{svcPath}"" /v ImagePath /t REG_EXPAND_SZ /d ""{UsbDriverImagePath.Expected(sys)}"" /f");
+            }
+
             log($"── {cs}: 清过滤驱动 ──");
             foreach (var g in ClassGuids)
             {

@@ -2191,61 +2191,210 @@ def network_reset_stack() -> dict:
     return _network_result(True, steps, need_reboot=need_reboot, suggestions=suggestions)
 
 
-def network_full_repair() -> dict:
-    """全面修复：服务软重启 → 协议栈（不碰 USB、不删设备）。"""
+def network_fix_ethernet() -> dict:
+    """有线优先：启用/硬复位物理网卡、关节能、DHCP 续租（不碰 USB、不删设备、不需外网）。"""
     steps: list[str] = []
     if not _is_admin():
         return _network_result(
             False, ["需要管理员权限"], suggestions=["请右键以管理员身份运行"]
         )
 
-    _step(steps, "=== 1/3 软重启 WLAN 服务（不删设备）===")
+    _step(steps, "=== 有线网卡急救（识别了但网线不通）===")
+    _progress("正在修复有线/物理网卡…")
+    ps = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+function Test-Virt([string]$n,[string]$d) {
+  return [bool]("$n $d" -match 'Hyper-V|vEthernet|VMware|VirtualBox|TAP-|OpenVPN|WireGuard|Wintun|VPN|Loopback|Pseudo|Bluetooth|Wi-Fi Direct|Hosted Network')
+}
+$log = New-Object System.Collections.Generic.List[string]
+foreach ($svc in @('nsi','NlaSvc','netprofm','Netman','Dhcp','Dnscache','WinHttpAutoProxySvc','LanmanWorkstation','BFE')) {
+  $s = Get-Service $svc -EA SilentlyContinue; if (-not $s) { continue }
+  $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
+  $cfg = Get-ItemProperty $key -EA SilentlyContinue
+  if ($cfg -and $cfg.Start -eq 4) {
+    Set-ItemProperty $key Start 2 -Type DWord -EA SilentlyContinue
+    [void]$log.Add("启用服务 $svc")
+  }
+  if ($s.Status -ne 'Running') {
+    if ($svc -eq 'Dhcp') { Start-Service $svc -EA SilentlyContinue }
+    else { Restart-Service $svc -Force -EA SilentlyContinue; Start-Service $svc -EA SilentlyContinue }
+    if ((Get-Service $svc -EA SilentlyContinue).Status -eq 'Running') { [void]$log.Add("启动 $svc") }
+  }
+}
+pnputil /scan-devices | Out-Null
+Get-PnpDevice -Class Net -EA SilentlyContinue | ForEach-Object {
+  if (Test-Virt $_.FriendlyName $_.FriendlyName) { return }
+  $prob = 0; try { $prob = [int]$_.Problem } catch {}
+  if ($_.Status -eq 'OK' -and $prob -eq 0) { return }
+  Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -EA SilentlyContinue
+  pnputil /enable-device "$($_.InstanceId)" | Out-Null
+  pnputil /restart-device "$($_.InstanceId)" | Out-Null
+  [void]$log.Add("启用设备 $($_.FriendlyName)")
+}
+$adapters = @(Get-NetAdapter -EA SilentlyContinue | Sort-Object {
+  if ($_.MediaType -match '802\.3|Ethernet' -or $_.InterfaceDescription -match 'Ethernet|PCI|GbE|LAN') { 0 }
+  elseif ($_.Name -match 'Wi-?Fi|Wireless|WLAN' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN|802\.11') { 1 }
+  else { 2 }
+})
+foreach ($a in $adapters) {
+  if (Test-Virt $a.Name $a.InterfaceDescription) { continue }
+  [void]$log.Add("网卡 $($a.Name): $($a.Status) · $($a.InterfaceDescription)")
+  if ($a.AdminStatus -eq 'Down' -or $a.Status -eq 'Disabled') {
+    Enable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+    [void]$log.Add("已启用 $($a.Name)")
+  }
+  try {
+    $p = Get-NetAdapterPowerManagement -Name $a.Name -EA SilentlyContinue
+    if ($p -and $p.AllowComputerToTurnOffDevice -eq 'Enabled') {
+      Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -EA SilentlyContinue
+      [void]$log.Add("关闭节能 $($a.Name)")
+    }
+  } catch {}
+  Disable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+  Start-Sleep -Milliseconds 500
+  Enable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+  Restart-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+  [void]$log.Add("硬复位 $($a.Name)")
+}
+Start-Sleep -Seconds 2
+netsh winhttp reset proxy | Out-Null
+$inet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+if (Test-Path $inet) {
+  Set-ItemProperty $inet ProxyEnable 0 -Type DWord -EA SilentlyContinue
+  Remove-ItemProperty $inet ProxyServer -Force -EA SilentlyContinue
+  Remove-ItemProperty $inet AutoConfigURL -Force -EA SilentlyContinue
+  [void]$log.Add('已关闭用户代理')
+}
+arp -d * 2>$null | Out-Null
+ipconfig /flushdns | Out-Null
+foreach ($a in @(Get-NetAdapter -EA SilentlyContinue)) {
+  if (Test-Virt $a.Name $a.InterfaceDescription) { continue }
+  if ($a.Status -notin @('Up','Disconnected','Not Present')) { continue }
+  Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue |
+    Where-Object { $_.PrefixOrigin -eq 'Manual' -or $_.IPAddress -like '169.254.*' } |
+    ForEach-Object {
+      Remove-NetIPAddress -InterfaceIndex $_.InterfaceIndex -IPAddress $_.IPAddress -Confirm:$false -EA SilentlyContinue
+      [void]$log.Add("清除坏地址 $($_.IPAddress)")
+    }
+  Set-NetIPInterface -InterfaceIndex $a.ifIndex -Dhcp Enabled -EA SilentlyContinue
+  ipconfig /release "$($a.Name)" 2>$null | Out-Null
+  ipconfig /renew "$($a.Name)" 2>$null | Out-Null
+  [void]$log.Add("DHCP 续租 $($a.Name)")
+}
+$up = @(Get-NetAdapter -EA SilentlyContinue | Where-Object { -not (Test-Virt $_.Name $_.InterfaceDescription) -and $_.Status -eq 'Up' })
+$ipOk = @(Get-NetIPConfiguration -EA SilentlyContinue | Where-Object {
+  $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address -and ($_.IPv4Address.IPAddress -notlike '169.254.*')
+})
+[void]$log.Add("复检 Up=$($up.Count) 有效IP=$($ipOk.Count)")
+foreach ($c in $ipOk) {
+  $ip = ($c.IPv4Address | Select-Object -First 1).IPAddress
+  $gw = ($c.IPv4DefaultGateway | Select-Object -First 1).NextHop
+  [void]$log.Add("IP $($c.InterfaceAlias)=$ip 网关=$gw")
+}
+[PSCustomObject]@{ steps = @($log); up = $up.Count; ip = $ipOk.Count } | ConvertTo-Json -Compress -Depth 4
+"""
+    code, text = _run_powershell(ps, timeout=120)
+    data: dict = {}
+    if code == 0 and (text or "").strip():
+        import json
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            _step(steps, f"有线修复输出解析失败: {(text or '')[:200]}")
+    else:
+        _step(steps, f"有线修复失败: {(text or '')[:300] or code}")
+
+    for s in data.get("steps") or []:
+        _step(steps, str(s))
+        _progress(str(s))
+
+    up_n = int(data.get("up") or 0)
+    ip_n = int(data.get("ip") or 0)
+    suggestions: list[str] = []
+    ok = up_n > 0 and ip_n > 0
+    if ok:
+        suggestions.append("有线/物理网卡已拿到地址，可试浏览器")
+    elif up_n > 0:
+        suggestions.append("网卡已 Up 但仍无有效 IP：查网线/交换机/路由器 DHCP，或继续「重置协议栈」后重启")
+    else:
+        suggestions.append(
+            "网卡仍未 Up：确认已插网线；若设备管理器里网卡正常仍不行，多半是口坏/对端故障（软件无法改）"
+        )
+    _progress("有线网卡急救完成")
+    return _network_result(ok, steps, suggestions=suggestions)
+
+
+def network_full_repair() -> dict:
+    """全面修复：有线优先 → WiFi 服务 → 协议栈（不碰 USB、不删设备、不需外网下驱动）。"""
+    steps: list[str] = []
+    if not _is_admin():
+        return _network_result(
+            False, ["需要管理员权限"], suggestions=["请右键以管理员身份运行"]
+        )
+
+    _step(steps, "=== 1/4 有线/物理网卡急救 ===")
+    r1 = network_fix_ethernet()
+    for s in r1.get("steps") or []:
+        steps.append(str(s))
+        _progress(str(s))
+    if r1.get("ok"):
+        _progress("有线已恢复")
+        return _network_result(
+            True,
+            steps,
+            suggestions=["有线网络已恢复"] + list(r1.get("suggestions") or []),
+            need_reboot=False,
+        )
+
+    _step(steps, "=== 2/4 软重启 WLAN 服务（不删设备）===")
     r2 = network_fix_wifi_driver()
     for s in r2.get("steps") or []:
         steps.append(str(s))
         _progress(str(s))
-    if r2.get("wlan_alive"):
-        _progress("无线已恢复")
-        return _network_result(
-            True,
-            steps,
-            suggestions=["无线已恢复，可连接 WiFi"],
-            wlan_alive=True,
-        )
 
-    _step(steps, "=== 2/3 修复服务与 DNS ===")
+    _step(steps, "=== 3/4 修复服务与 DNS ===")
     for msg in (
         _ensure_service("WinHttpAutoProxySvc", restart=False),
-        *(_ensure_service(svc, restart=True) for svc in ("WlanSvc", "NlaSvc", "Dnscache", "netprofm")),
+        *(_ensure_service(svc, restart=True) for svc in ("WlanSvc", "NlaSvc", "Dnscache", "netprofm", "Netman")),
         _ensure_service("Dhcp", restart=False),
     ):
         steps.append(msg)
         _progress(msg)
 
-    _step(steps, "=== 3/3 重置协议栈 ===")
+    _step(steps, "=== 4/4 重置协议栈 ===")
     r3 = network_reset_stack()
     for s in r3.get("steps") or []:
         steps.append(str(s))
         _progress(str(s))
 
+    # 协议栈后再跑一轮有线续租
+    _progress("协议栈后再次续租 DHCP…")
+    r4 = network_fix_ethernet()
+    for s in (r4.get("steps") or [])[-8:]:
+        steps.append(str(s))
+
     _step(steps, "=== 修复后诊断 ===")
     diag = network_diagnose()
-    for s in (diag.get("steps") or [])[:14]:
+    for s in (diag.get("steps") or [])[:16]:
         steps.append(str(s))
         _progress(str(s))
     suggestions = list(diag.get("suggestions") or [])
-    if not diag.get("wlan_alive"):
+    online = bool(diag.get("ping_internet") or diag.get("ping_gateway"))
+    wlan_ok = bool(diag.get("wlan_alive"))
+    eth_ok = bool(r4.get("ok") or r1.get("ok"))
+    if not online and not eth_ok:
         suggestions.insert(
             0,
-            "服务/协议栈已处理仍无 WiFi：请人工拔插无线网卡或重启（软件不会再动 USB）",
+            "服务/协议栈已处理仍无网络：请确认网线已插、换口/换线；无线则人工拔插或重启（软件不再动 USB）",
         )
-    ok = bool(diag.get("wlan_alive"))
+    ok = online or eth_ok or wlan_ok
     _progress("网络全面修复完成")
     return _network_result(
         ok,
         steps,
         suggestions=suggestions,
-        wlan_alive=ok,
+        wlan_alive=wlan_ok,
         need_reboot=bool(r3.get("need_reboot")),
         need_unplug=bool(diag.get("need_unplug")),
     )

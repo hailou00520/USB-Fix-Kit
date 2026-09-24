@@ -2,6 +2,13 @@ export type StatusInfo = {
   isPe: boolean
   drive: string | null
   isAdmin: boolean
+  /** 探测到键鼠/USB 主机控制器已挂 —— 应自动修 */
+  inputBroken?: boolean
+  inputReason?: string
+  /** 命令行 --autofix */
+  autoFix?: boolean
+  /** --pe 在正常 Windows 下预览 PE 功能集 */
+  pePreview?: boolean
 }
 
 export type ActionId =
@@ -11,6 +18,8 @@ export type ActionId =
   | "usbdk"
   | "account"
   | "deploy"
+  | "deployUsb"
+  | "deployNet"
   | "remote"
   | "drivers"
   | "winFix"

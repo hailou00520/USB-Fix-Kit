@@ -77,8 +77,8 @@ public sealed class TongchangRunner
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
-            // 总时限：共享/网络全面修复不应无限挂死
-            const int overallSeconds = 180;
+            // 总时限：有线硬复位+协议栈可能超过 3 分钟
+            const int overallSeconds = 300;
             using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             overallCts.CancelAfter(TimeSpan.FromSeconds(overallSeconds));
 

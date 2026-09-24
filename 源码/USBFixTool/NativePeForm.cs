@@ -2,32 +2,36 @@ using System.Drawing.Drawing2D;
 
 namespace USBFixTool;
 
-/// <summary>PE 原生美化界面（无 WebView2）</summary>
+/// <summary>PE 原生界面（无 WebView2）——视觉对齐 Windows 网页版青绿风格。</summary>
 public sealed class NativePeForm : Form
 {
     private readonly RepairEngine _engine;
     private readonly RichTextBox _log;
     private readonly Label _status;
     private readonly Label _driveHint;
+    private readonly Label _modeTitle;
     private readonly Panel _actionsHost;
     private bool _busy;
 
-    private static readonly Color Bg = Color.FromArgb(238, 241, 244);
-    private static readonly Color Card = Color.FromArgb(255, 255, 255);
-    private static readonly Color Fg = Color.FromArgb(44, 51, 60);
-    private static readonly Color Muted = Color.FromArgb(106, 115, 128);
-    private static readonly Color Emerald = Color.FromArgb(61, 143, 120);
-    private static readonly Color EmeraldDim = Color.FromArgb(229, 242, 237);
+    // 对齐 Web 主题：teal-700 / 雾面背景
+    private static readonly Color AppBg = Color.FromArgb(221, 232, 228);
+    private static readonly Color Card = Color.FromArgb(250, 252, 251);
+    private static readonly Color Fg = Color.FromArgb(24, 24, 27);
+    private static readonly Color Muted = Color.FromArgb(113, 113, 122);
+    private static readonly Color Teal = Color.FromArgb(15, 118, 110);
+    private static readonly Color TealSoft = Color.FromArgb(240, 253, 250);
+    private static readonly Color TealBorder = Color.FromArgb(153, 246, 228);
+    private static readonly Color Danger = Color.FromArgb(185, 28, 28);
 
     public NativePeForm()
     {
         _engine = new RepairEngine(AppendLog);
-        Text = "USB 急救工具 · PE";
-        Size = new Size(780, 700);
-        MinimumSize = new Size(640, 560);
+        Text = Program.ForcePeUi ? "一体化急救工具 · PE 预览" : "一体化急救工具 · PE";
+        Size = new Size(820, 740);
+        MinimumSize = new Size(680, 600);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
-        BackColor = Color.FromArgb(232, 236, 241);
+        BackColor = AppBg;
         ForeColor = Fg;
         Font = new Font("Microsoft YaHei UI", 9.5F);
         DoubleBuffered = true;
@@ -38,151 +42,177 @@ public sealed class NativePeForm : Form
             if (File.Exists(ico)) Icon = new Icon(ico);
             else Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? Icon;
         }
-        catch { }
+        catch { /* ignore */ }
 
-        // Header band
-        var header = new DoubleBufPanel { Dock = DockStyle.Top, Height = 108, BackColor = Card };
+        var header = new DoubleBufPanel { Dock = DockStyle.Top, Height = 118, BackColor = Color.Transparent };
         header.Paint += (_, e) =>
         {
-            using var pen = new Pen(Color.FromArgb(40, 255, 255, 255));
-            e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
-            using var glow = new SolidBrush(Color.FromArgb(28, 52, 211, 153));
-            e.Graphics.FillEllipse(glow, header.Width - 160, -40, 200, 120);
-        };
-
-        var iconBox = new Panel
-        {
-            Location = new Point(24, 28),
-            Size = new Size(44, 44),
-            BackColor = EmeraldDim
-        };
-        iconBox.Paint += (_, e) =>
-        {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var path = RoundRect(new Rectangle(0, 0, 43, 43), 10);
-            using var br = new SolidBrush(EmeraldDim);
-            using var pen = new Pen(Color.FromArgb(80, Emerald));
+            var r = new Rectangle(16, 12, header.Width - 32, header.Height - 16);
+            using var path = RoundRect(r, 12);
+            using var br = new SolidBrush(Color.FromArgb(230, 255, 255, 255));
+            using var pen = new Pen(Color.FromArgb(40, 15, 118, 110));
             e.Graphics.FillPath(br, path);
             e.Graphics.DrawPath(pen, path);
-            TextRenderer.DrawText(e.Graphics, "USB", new Font("Segoe UI Semibold", 9F),
-                new Rectangle(0, 0, 44, 44), Emerald,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            using var glow = new SolidBrush(Color.FromArgb(36, 45, 212, 191));
+            e.Graphics.FillEllipse(glow, header.Width - 180, -30, 160, 100);
         };
+
+        var iconBox = new PictureBox
+        {
+            Location = new Point(32, 32),
+            Size = new Size(40, 40),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BackColor = Color.Transparent
+        };
+        try
+        {
+            var png = Path.Combine(AppContext.BaseDirectory, "wwwroot", "icon.png");
+            if (!File.Exists(png)) png = Path.Combine(AppContext.BaseDirectory, "icon.png");
+            if (File.Exists(png)) iconBox.Image = Image.FromFile(png);
+        }
+        catch { /* ignore */ }
 
         var brand = new Label
         {
-            Text = "USB FIX KIT",
-            Font = new Font("Segoe UI", 8F, FontStyle.Bold),
-            ForeColor = Muted,
-            Location = new Point(82, 22),
-            AutoSize = true
+            Text = "一体化急救工具",
+            Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold),
+            ForeColor = Teal,
+            Location = new Point(84, 28),
+            AutoSize = true,
+            BackColor = Color.Transparent
         };
-        var title = new Label
+        _modeTitle = new Label
         {
-            Text = "USB 急救工具",
-            Font = new Font("Microsoft YaHei UI", 20F, FontStyle.Bold),
+            Text = "PE 离线急救",
+            Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold),
             ForeColor = Fg,
-            Location = new Point(80, 38),
-            AutoSize = true
+            Location = new Point(82, 46),
+            AutoSize = true,
+            BackColor = Color.Transparent
         };
         var tip = new Label
         {
-            Text = "PE 原生界面 · 点一次后进系统请干看着",
+            Text = "U 盘进 PE → 点一次 → 拔盘重启进 Windows → 干看着（不需网络）",
             Font = new Font("Microsoft YaHei UI", 9F),
             ForeColor = Muted,
-            Location = new Point(82, 72),
-            AutoSize = true
+            Location = new Point(84, 80),
+            AutoSize = true,
+            BackColor = Color.Transparent
         };
+
         _status = new Label
         {
             Text = "● PE",
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(74, 106, 128),
+            ForeColor = Teal,
             AutoSize = true,
-            Location = new Point(620, 30)
+            BackColor = TealSoft,
+            Padding = new Padding(8, 4, 8, 4),
+            Location = new Point(560, 34)
         };
         _driveHint = new Label
         {
-            ForeColor = Muted,
-            Font = new Font("Consolas", 9F),
+            ForeColor = Teal,
+            Font = new Font("Consolas", 9.5F, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(620, 54)
+            BackColor = Color.Transparent,
+            Location = new Point(560, 64)
         };
-        header.Controls.AddRange(new Control[] { iconBox, brand, title, tip, _status, _driveHint });
+        header.Controls.AddRange(new Control[] { iconBox, brand, _modeTitle, tip, _status, _driveHint });
         header.Resize += (_, _) =>
         {
-            _status.Left = Math.Max(480, header.Width - 200);
-            _driveHint.Left = _status.Left;
+            var right = Math.Max(420, header.Width - 220);
+            _status.Left = right;
+            _driveHint.Left = right;
         };
 
-        // 按钮区按内容撑开，不裁切；仅日志区在内容过多时滚动
         _actionsHost = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 320,
-            BackColor = Bg,
-            Padding = new Padding(20, 16, 20, 8),
+            Height = 360,
+            BackColor = Color.Transparent,
+            Padding = new Padding(16, 4, 16, 8),
             AutoScroll = false
         };
 
-        // Log card：占满剩余空间，RichTextBox 仅在日志超高时出滚动条
         var logCard = new DoubleBufPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Bg,
-            Padding = new Padding(20, 0, 20, 20),
-            MinimumSize = new Size(0, 180)
+            BackColor = Color.Transparent,
+            Padding = new Padding(16, 0, 16, 16),
+            MinimumSize = new Size(0, 160)
         };
-        var logInner = new DoubleBufPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Card
-        };
+        var logInner = new DoubleBufPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
         logInner.Paint += (_, e) =>
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var path = RoundRect(new Rectangle(0, 0, logInner.Width - 1, logInner.Height - 1), 10);
-            using var pen = new Pen(Color.FromArgb(35, 255, 255, 255));
+            var r = new Rectangle(0, 0, logInner.Width - 1, logInner.Height - 1);
+            using var path = RoundRect(r, 12);
+            using var br = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            using var pen = new Pen(Color.FromArgb(50, 15, 118, 110));
+            e.Graphics.FillPath(br, path);
             e.Graphics.DrawPath(pen, path);
         };
+        var logHead = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = Color.Transparent };
         var logTitle = new Label
         {
-            Text = "  输出日志",
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            Text = "输出日志",
+            Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
             ForeColor = Fg,
-            Dock = DockStyle.Top,
-            Height = 40,
-            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(14, 12),
+            AutoSize = true,
             BackColor = Color.Transparent
         };
+        var logSub = new Label
+        {
+            Text = "实时进度 · 修好后拔 U 盘重启",
+            Font = new Font("Microsoft YaHei UI", 8F),
+            ForeColor = Muted,
+            Location = new Point(88, 15),
+            AutoSize = true,
+            BackColor = Color.Transparent
+        };
+        logHead.Controls.Add(logTitle);
+        logHead.Controls.Add(logSub);
+
         _log = new RichTextBox
         {
             Dock = DockStyle.Fill,
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
-            BackColor = Color.FromArgb(246, 248, 250),
-            ForeColor = Color.FromArgb(90, 101, 112),
+            BackColor = Color.FromArgb(248, 250, 249),
+            ForeColor = Color.FromArgb(82, 82, 91),
             Font = new Font("Consolas", 9.5F),
             DetectUrls = false
         };
-        var logPad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 0, 12, 12), BackColor = Color.Transparent };
+        var logPad = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12, 0, 12, 12),
+            BackColor = Color.Transparent
+        };
         logPad.Controls.Add(_log);
         logInner.Controls.Add(logPad);
-        logInner.Controls.Add(logTitle);
+        logInner.Controls.Add(logHead);
         logCard.Controls.Add(logInner);
 
         Controls.Add(logCard);
         Controls.Add(_actionsHost);
         Controls.Add(header);
         Controls.Add(new TitleChrome(this));
-        FormRoundCorners.Attach(this, 10);
+        FormRoundCorners.Attach(this, 12);
 
         Load += (_, _) =>
         {
             RefreshStatus();
             BuildButtons();
-            AppendLog("PE 原生美化界面已就绪");
-            AppendLog("推荐：点下方绿色主按钮「穷尽修复 + 自动部署远程自启」");
+            var preview = Program.ForcePeUi && !RepairEngine.IsPeEnvironment();
+            AppendLog(preview
+                ? "当前为 PE 界面预览（正常 Windows）。点修复无效——真急救请用 U 盘进 PE。"
+                : "PE 媒介模式：离线修目标盘 + 部署开机自修脚本");
+            AppendLog("主流程（不需网）：①穷尽修复并部署 → 拔盘重启 → 进系统干看着");
+            AppendLog("远程自启是可选支线：进系统后没网连不上就别点");
         };
     }
 
@@ -196,10 +226,14 @@ public sealed class NativePeForm : Form
     {
         var drive = RepairEngine.FindWindowsDrive();
         var remote = FindRemoteFolder() != null;
-        _status.Text = "● PE 维护模式";
+        var preview = Program.ForcePeUi && !RepairEngine.IsPeEnvironment();
+        _status.Text = preview ? "● PE 预览（非真实 PE）" : "● PE 维护模式";
+        _status.ForeColor = preview ? Color.FromArgb(3, 105, 161) : Teal;
+        _status.BackColor = preview ? Color.FromArgb(224, 242, 254) : TealSoft;
         _driveHint.Text = drive != null
-            ? $"{drive}  ·  Remote:{(remote ? "有" : "无")}"
+            ? $"目标盘 {drive}  ·  Remote:{(remote ? "有" : "无")}"
             : "未检测到系统盘";
+        _modeTitle.Text = preview ? "PE 界面预览" : "PE 媒介急救";
     }
 
     private void BuildButtons()
@@ -207,48 +241,51 @@ public sealed class NativePeForm : Form
         _actionsHost.Controls.Clear();
         var items = new (string title, string desc, bool featured, bool danger, Func<Task> act)[]
         {
-            ("穷尽修复（不含远程）", "补 USB · 清 UsbDk · 自启修复（远程请用下方独立按钮）", true, false,
-                () => Run(() => _engine.RunFullPeRepairAsync(RequireDrive(), CancellationToken.None))),
-            ("仅检查问题（完整）", "完整只读体检：服务/过滤/策略/设备/电源，区分严重与提示", false, false,
+            ("① 穷尽修复并部署合并自修",
+                "媒介主流程·不需网：离线修 → 写 USB+网开机自修 → 进系统全屏自跑",
+                true, false,
+                () => RunHive(() => _engine.RunFullPeRepairAsync(RequireDrive(), CancellationToken.None))),
+            ("部署合并自修（USB+网）", "只写自启：键鼠/USB + 有线网一起修", false, false,
+                () => RunHive(() => _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Both, CancellationToken.None))),
+            ("仅部署键鼠/USB 自修", "开机只穷尽修 USB/键鼠", false, false,
+                () => RunHive(() => _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Usb, CancellationToken.None))),
+            ("仅部署救网自修", "开机专修有线网，方便远程接手", false, false,
+                () => RunHive(() => _engine.RunDeployBootCheckAsync(RequireDrive(), BootFixScope.Net, CancellationToken.None))),
+            ("部署远程软件自启", "进系统后要上网才能连；没网请先部署救网", false, false,
+                () => RunHive(() => { _engine.RunRemoteDeploy(RequireDrive()); return Task.CompletedTask; })),
+            ("仅检查问题", "只读体检，不修改", false, false,
                 () => Run(() => _engine.RunCheckOnlyAsync(CancellationToken.None))),
-            ("部署远程软件自启", "独立：清 Zone 标记 + bat 自启，避免安全警告弹窗", false, false,
-                () => Run(() => { _engine.RunRemoteDeploy(RequireDrive()); return Task.CompletedTask; })),
-            ("UsbDk 专项离线补服务", "双 ControlSet · 清过滤 · 补 Start", false, false,
-                () => Run(() => _engine.RunPeUsbFixAsync(RequireDrive(), CancellationToken.None))),
-            ("仅部署 USB 开机自检", "只写穷尽修复自启", false, false,
-                () => Run(() => _engine.RunDeployBootCheckAsync(RequireDrive(), CancellationToken.None))),
-            ("解除账号自动登录", "Administrator 空密码", false, false,
-                () => Run(() => _engine.RunAccountUnlockAsync(RequireDrive(), CancellationToken.None))),
-            ("刷新状态", "重新检测系统盘 / Remote", false, false,
+            ("UsbDk / ImagePath 离线补丁", "双 ControlSet · 清过滤 · 修 usbxhci ImagePath", false, false,
+                () => RunHive(() => _engine.RunPeUsbFixAsync(RequireDrive(), CancellationToken.None))),
+            ("解除账号 · 自动登录", "启用 Administrator · 空密码，保证进系统后自修能跑", false, false,
+                () => RunHive(() => _engine.RunAccountUnlockAsync(RequireDrive(), CancellationToken.None))),
+            ("刷新状态", "重新检测系统盘 / Remote 目录", false, false,
                 () => { RefreshStatus(); AppendLog("状态已刷新"); return Task.CompletedTask; }),
         };
 
         int y = 0;
-        int w = _actionsHost.ClientSize.Width - 48;
-        if (w < 400) w = 700;
+        int w = Math.Max(400, _actionsHost.ClientSize.Width - 40);
 
-        // featured full width
         var feat = items[0];
-        var featBtn = MakeButton(feat.title, feat.desc, true, false, feat.act, w, 72);
+        var featBtn = MakeButton(feat.title, feat.desc, true, false, feat.act, w, 78);
         featBtn.Location = new Point(4, y);
         _actionsHost.Controls.Add(featBtn);
-        y += 84;
+        y += 90;
 
         int colW = (w - 12) / 2;
         int col = 0;
         for (int i = 1; i < items.Length; i++)
         {
             var it = items[i];
-            var btn = MakeButton(it.title, it.desc, false, it.danger, it.act, colW, 62);
+            var btn = MakeButton(it.title, it.desc, false, it.danger, it.act, colW, 68);
             btn.Location = new Point(4 + col * (colW + 12), y);
             _actionsHost.Controls.Add(btn);
             col++;
-            if (col == 2) { col = 0; y += 74; }
+            if (col == 2) { col = 0; y += 80; }
         }
-        if (col != 0) y += 74;
+        if (col != 0) y += 80;
 
-        // 按按钮实际占位撑开，默认全部可见
-        _actionsHost.Height = y + _actionsHost.Padding.Top + _actionsHost.Padding.Bottom + 16;
+        _actionsHost.Height = y + _actionsHost.Padding.Top + _actionsHost.Padding.Bottom + 8;
         _actionsHost.Resize -= RelayoutButtons;
         _actionsHost.Resize += RelayoutButtons;
     }
@@ -256,7 +293,7 @@ public sealed class NativePeForm : Form
     private void RelayoutButtons(object? sender, EventArgs e)
     {
         if (_actionsHost.Controls.Count == 0) return;
-        int w = Math.Max(400, _actionsHost.ClientSize.Width - 48);
+        int w = Math.Max(400, _actionsHost.ClientSize.Width - 40);
         var feat = _actionsHost.Controls[0];
         feat.Width = w;
         feat.Location = new Point(4, 0);
@@ -285,15 +322,15 @@ public sealed class NativePeForm : Form
         {
             Size = new Size(width, height),
             Cursor = Cursors.Hand,
-            BackColor = featured ? EmeraldDim : Card
+            BackColor = Color.Transparent
         };
-        var tColor = featured ? Emerald : (danger ? Color.FromArgb(252, 165, 165) : Fg);
+
         var titleLbl = new Label
         {
             Text = title,
-            Font = new Font("Microsoft YaHei UI", featured ? 11F : 10F, FontStyle.Bold),
-            ForeColor = tColor,
-            Location = new Point(16, featured ? 14 : 12),
+            Font = new Font("Microsoft YaHei UI", featured ? 12F : 10F, FontStyle.Bold),
+            ForeColor = featured ? Color.White : (danger ? Danger : Fg),
+            Location = new Point(featured ? 18 : 14, featured ? 14 : 12),
             AutoSize = true,
             BackColor = Color.Transparent,
             Cursor = Cursors.Hand
@@ -302,28 +339,56 @@ public sealed class NativePeForm : Form
         {
             Text = desc,
             Font = new Font("Microsoft YaHei UI", 8.25F),
-            ForeColor = Muted,
-            Location = new Point(16, featured ? 40 : 34),
-            Size = new Size(width - 36, 22),
+            ForeColor = featured ? Color.FromArgb(220, 255, 255, 255) : Muted,
+            Location = new Point(featured ? 18 : 14, featured ? 42 : 36),
+            Size = new Size(width - (featured ? 48 : 28), featured ? 28 : 24),
             BackColor = Color.Transparent,
             Cursor = Cursors.Hand
         };
         p.Controls.Add(titleLbl);
         p.Controls.Add(descLbl);
+
+        if (featured)
+        {
+            var badge = new Label
+            {
+                Text = "推荐",
+                Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(60, 255, 255, 255),
+                AutoSize = true,
+                Padding = new Padding(6, 2, 6, 2),
+                Location = new Point(width - 56, 14),
+                Cursor = Cursors.Hand
+            };
+            p.Controls.Add(badge);
+            p.Resize += (_, _) => badge.Left = Math.Max(120, p.Width - 56);
+        }
+
         p.Paint += (_, e) =>
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var r = new Rectangle(0, 0, p.Width - 1, p.Height - 1);
-            using var path = RoundRect(r, 10);
-            using var br = new SolidBrush(featured ? EmeraldDim : Card);
-            using var pen = new Pen(featured ? Color.FromArgb(100, Emerald) : Color.FromArgb(40, 255, 255, 255));
-            e.Graphics.FillPath(br, path);
-            e.Graphics.DrawPath(pen, path);
+            using var path = RoundRect(r, 12);
+            if (featured)
+            {
+                using var br = new SolidBrush(Teal);
+                e.Graphics.FillPath(br, path);
+                using var bar = new SolidBrush(Color.FromArgb(180, 94, 234, 212));
+                e.Graphics.FillRectangle(bar, 0, 8, 4, p.Height - 16);
+            }
+            else
+            {
+                using var br = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
+                using var pen = new Pen(Color.FromArgb(55, 15, 118, 110));
+                e.Graphics.FillPath(br, path);
+                e.Graphics.DrawPath(pen, path);
+            }
         };
+
         async void Click(object? s, EventArgs e) { if (!_busy) await act(); }
         p.Click += Click;
-        titleLbl.Click += Click;
-        descLbl.Click += Click;
+        foreach (Control c in p.Controls) c.Click += Click;
         return p;
     }
 
@@ -346,6 +411,13 @@ public sealed class NativePeForm : Form
         return d;
     }
 
+    private static void RejectPePreviewHive()
+    {
+        if (Program.ForcePeUi && !RepairEngine.IsPeEnvironment())
+            throw new InvalidOperationException(
+                "当前是 PE 界面预览，不能挂载本机正在使用的注册表。真急救请用 U 盘进 PE 后再点①。");
+    }
+
     private static string? FindRemoteFolder()
     {
         var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
@@ -354,6 +426,12 @@ public sealed class NativePeForm : Form
             return p;
         return null;
     }
+
+    private Task RunHive(Func<Task> action) => Run(() =>
+    {
+        RejectPePreviewHive();
+        return action();
+    });
 
     private async Task Run(Func<Task> action)
     {
@@ -366,13 +444,13 @@ public sealed class NativePeForm : Form
             AppendLog($"开始 {DateTime.Now:HH:mm:ss}");
             await action();
             AppendLog("");
-            AppendColored("✓ 完成。请拔 U 盘重启，然后坐下干看着。", Emerald);
+            AppendColored("✓ 完成。请拔 U 盘重启，然后坐下干看着。", Teal);
             MessageBox.Show("完成！\n请拔掉 PE U 盘，重启进 Windows，然后干看着。", "完成",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            AppendColored("✗ " + ex.Message, Color.FromArgb(248, 113, 113));
+            AppendColored("✗ " + ex.Message, Color.FromArgb(220, 38, 38));
             MessageBox.Show(ex.Message, "出错", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -387,7 +465,7 @@ public sealed class NativePeForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => AppendLog(msg)); return; }
         _log.SelectionStart = _log.TextLength;
-        _log.SelectionColor = Color.FromArgb(90, 101, 112);
+        _log.SelectionColor = Color.FromArgb(82, 82, 91);
         _log.AppendText(msg + "\n");
         _log.ScrollToCaret();
     }

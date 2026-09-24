@@ -10,7 +10,10 @@
 
 param(
     [switch]$Silent,
-    [switch]$Watch
+    [switch]$Watch,
+    # Both=键鼠USB+有线网 · Usb=仅键鼠USB · Net=仅救网（远程通道）
+    [ValidateSet('Both', 'Usb', 'Net')]
+    [string]$Scope = 'Both'
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -19,14 +22,33 @@ $FixDir     = Join-Path $drive 'Windows\USBFix'
 $LogFile    = Join-Path $drive 'usb_fix_log.txt'
 $ReportFile = Join-Path $drive 'usb_fix_report.txt'
 $StateFile  = Join-Path $FixDir 'state.txt'
+$ScopeFile  = Join-Path $FixDir 'scope.txt'
 $Issues = New-Object System.Collections.Generic.List[string]
 $Fixed  = New-Object System.Collections.Generic.List[string]
 $Tried  = New-Object System.Collections.Generic.List[string]
+
+# 部署写入的 scope.txt 优先（重启后 bat 参数偶发丢失时仍按部署意图跑）
+if (Test-Path $ScopeFile) {
+    $fromDisk = ((Get-Content $ScopeFile -Raw -EA SilentlyContinue) + '').Trim()
+    if ($fromDisk -match '^(Both|Usb|Net)$') { $Scope = $Matches[1] }
+}
+$script:FixScope = $Scope
 
 $useUi = -not $Silent
 if ($Watch) { $useUi = $true }
 if ([System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0 -and -not $Watch) {
     $useUi = $false
+}
+
+$script:ScopeTitle = switch ($script:FixScope) {
+    'Net' { '有线网络急救' }
+    'Usb' { '键鼠 / USB 穷尽修复' }
+    default { '键鼠+网络 穷尽修复' }
+}
+$script:ScopeHint = switch ($script:FixScope) {
+    'Net' { '专修有线网卡/DHCP/协议栈，方便远程接手。你不用点。' }
+    'Usb' { '专修键鼠与 USB。你不用点。全部失败才会提示重装。' }
+    default { '键鼠 USB + 有线网一起修。你不用点。全部失败才会提示重装。' }
 }
 
 # ===================== UI =====================
@@ -38,7 +60,7 @@ function New-WatchUi {
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'USB 穷尽修复 — 请干看着，无需操作'
+    $form.Text = "$($script:ScopeTitle) — 请干看着，无需操作"
     $form.WindowState = 'Maximized'
     $form.FormBorderStyle = 'None'
     $form.TopMost = $true
@@ -47,11 +69,11 @@ function New-WatchUi {
     $sh = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
 
     $t = New-Object System.Windows.Forms.Label
-    $t.Text = 'USB 穷尽修复进行中'; $t.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 28, [System.Drawing.FontStyle]::Bold)
+    $t.Text = "$($script:ScopeTitle) 进行中"; $t.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 28, [System.Drawing.FontStyle]::Bold)
     $t.ForeColor = [System.Drawing.Color]::White; $t.AutoSize = $true; $t.Location = New-Object System.Drawing.Point(48, 28)
 
     $h = New-Object System.Windows.Forms.Label
-    $h.Text = '会把所有办法逐个试完。你不用点任何东西。全部失败才会提示重装。'
+    $h.Text = $script:ScopeHint
     $h.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 13)
     $h.ForeColor = [System.Drawing.Color]::FromArgb(161,161,170); $h.AutoSize = $true
     $h.Location = New-Object System.Drawing.Point(52, 82)
@@ -196,14 +218,63 @@ function Test-UsbHealthy {
     return $ok
 }
 
+function Test-NetworkHealthy {
+    Start-Sleep -Seconds 2
+    $phys = @(Get-NetAdapter -EA SilentlyContinue | Where-Object {
+        -not (Test-IsVirtualNetName $_.Name $_.InterfaceDescription) -and
+        $_.Status -eq 'Up'
+    })
+    $goodIp = $false
+    foreach ($a in $phys) {
+        $ips = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' })
+        if ($ips.Count -gt 0) { $goodIp = $true; break }
+    }
+    # 有物理网卡 Up 就算基本活了；有非 APIPA 地址更好
+    $ok = ($phys.Count -gt 0)
+    $script:LastHealth = @{
+        Ok = $ok
+        Usb = 0; Hid = 0; Kbd = 0; Mou = 0; UsbDev = 0
+        OneLine = if ($goodIp) {
+            "物理网卡已 Up 且有有效 IPv4（可尝试远程）"
+        } elseif ($ok) {
+            "物理网卡已 Up，但可能还在拿 DHCP / 未插线（可再等或查线）"
+        } else {
+            "没有处于 Up 的物理网卡（驱动/禁用/口坏/未识别）"
+        }
+    }
+    Ui-Line "检测网: Up物理卡=$($phys.Count) 有效IP=$(if($goodIp){'有'}else{'无/APIPA'}) → $(if($ok){'基本可用'}else{'异常'})"
+    return $ok
+}
+
+function Test-ScopeHealthy {
+    switch ($script:FixScope) {
+        'Net' { return (Test-NetworkHealthy) }
+        'Usb' { return (Test-UsbHealthy) }
+        default {
+            $u = Test-UsbHealthy
+            $n = Test-NetworkHealthy
+            $ok = $u -and $n
+            if ($script:LastHealth) {
+                $script:LastHealth.Ok = $ok
+                $script:LastHealth.OneLine = "USB: $(if($u){'OK'}else{'异常'}) · 网: $(if($n){'OK'}else{'异常'})"
+            }
+            return $ok
+        }
+    }
+}
+
 function Clear-AutoStart {
     sc.exe config USBFixBoot start= disabled | Out-Null
     foreach ($name in @('USBFullCheck','USBFullCheckOnce','USBFixCheck')) {
         Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name $name -Force -EA SilentlyContinue
         Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name $name -Force -EA SilentlyContinue
     }
-    $sb = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp\USB全面体检.bat'
-    if (Test-Path $sb) { Remove-Item $sb -Force }
+    $startup = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp'
+    foreach ($n in @('USB全面体检.bat', '网络急救自修.bat', 'USB与网络急救.bat', '键鼠USB急救.bat')) {
+        $sb = Join-Path $startup $n
+        if (Test-Path $sb) { Remove-Item $sb -Force }
+    }
 }
 
 function Save-Report([bool]$healthy, [string]$verdict) {
@@ -576,15 +647,60 @@ function Fix-SuspectAutorun {
     }
 }
 
+function Fix-UsbDriverImagePath {
+    Ui-Step '办法: 修复驱动 ImagePath 双 SystemRoot（问题码 39）' 40
+    $targets = @(
+        @{ S='usbxhci'; F='usbxhci.sys' }, @{ S='USBXHCI'; F='usbxhci.sys' },
+        @{ S='usbehci'; F='usbehci.sys' }, @{ S='usbohci'; F='usbohci.sys' },
+        @{ S='usbuhci'; F='usbuhci.sys' }, @{ S='usbhub3'; F='usbhub3.sys' },
+        @{ S='usbhub'; F='usbhub.sys' }, @{ S='usbccgp'; F='usbccgp.sys' },
+        @{ S='usbd'; F='usbd.sys' }, @{ S='usbport'; F='usbport.sys' },
+        @{ S='HidUsb'; F='hidusb.sys' }, @{ S='mouhid'; F='mouhid.sys' },
+        @{ S='kbdhid'; F='kbdhid.sys' }, @{ S='mouclass'; F='mouclass.sys' },
+        @{ S='kbdclass'; F='kbdclass.sys' }, @{ S='Wdf01000'; F='Wdf01000.sys' }
+    )
+    $sets = @('CurrentControlSet','ControlSet001','ControlSet002') | Where-Object {
+        Test-Path "HKLM:\SYSTEM\$_\Services"
+    }
+    $n = 0
+    foreach ($cs in $sets) {
+        foreach ($t in $targets) {
+            $key = "HKLM:\SYSTEM\$cs\Services\$($t.S)"
+            if (-not (Test-Path $key)) { continue }
+            $cur = (Get-ItemProperty $key -Name ImagePath -EA SilentlyContinue).ImagePath
+            if (-not $cur) { continue }
+            $norm = [string]$cur
+            $hits = ([regex]::Matches($norm, 'SystemRoot', 'IgnoreCase')).Count
+            if ($hits -lt 2) { continue }
+            $expect = "\SystemRoot\System32\drivers\$($t.F)"
+            New-ItemProperty -Path $key -Name ImagePath -PropertyType ExpandString -Value $expect -Force | Out-Null
+            Add-Issue "[$cs] $($t.S) ImagePath 双重 SystemRoot"
+            Add-Fixed "[$cs] $($t.S) → $expect"
+            $n++
+        }
+    }
+    if ($n -eq 0) { Ui-Line 'ImagePath 无需修复' }
+}
+
 function Fix-EnableDevices {
-    Ui-Step '办法: 启用并重启异常 USB/HID 设备' 42
+    Ui-Step '办法: 启用并重启异常 USB/HID 设备（含问题码 39）' 42
     pnputil /scan-devices | Out-Null
     Get-PnpDevice -EA SilentlyContinue |
-        Where-Object { $_.Class -in @('USB','HIDClass','Keyboard','Mouse','USBDevice') -and $_.Status -notin @('OK','Unknown') } |
+        Where-Object {
+            $_.Class -in @('USB','HIDClass','Keyboard','Mouse','USBDevice') -and (
+                $_.Status -notin @('OK','Unknown') -or
+                ([int]($_.Problem) -eq 39)
+            )
+        } |
         ForEach-Object {
-            Add-Issue "[$($_.Status)] $($_.FriendlyName)"
+            Add-Issue "[$($_.Status)/P$($_.Problem)] $($_.FriendlyName)"
             Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -EA SilentlyContinue
             pnputil /restart-device "$($_.InstanceId)" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                pnputil /disable-device "$($_.InstanceId)" | Out-Null
+                Start-Sleep -Milliseconds 300
+                pnputil /enable-device "$($_.InstanceId)" | Out-Null
+            }
             Add-Fixed "重启 $($_.FriendlyName)"
         }
 }
@@ -763,25 +879,398 @@ function Test-IsSafeMode {
 }
 
 # ===================== 阶段执行 =====================
-function Invoke-PhaseSoft {
-    Ui-Phase '1/4 常规修复（含 UsbDk 专项）'
-    Fix-UsbDkRemnants
-    Fix-RegistryDeep
-    Fix-Services
-    Fix-Policies
-    Fix-Filters
+function Fix-EnableDisabledUsbControllers {
+    Ui-Step '办法: 启用被禁用的 USB 主机控制器 / Root Hub（问题码22）' 44
+    Get-PnpDevice -Class USB -EA SilentlyContinue |
+        Where-Object {
+            ($_.Problem -eq 22 -or $_.Status -eq 'Error') -and
+            ($_.FriendlyName -match 'Host Controller|Root Hub|xHCI|EHCI|OHCI|UHCI|可扩展主机控制器|根集线器')
+        } |
+        ForEach-Object {
+            Add-Issue "已禁用/异常控制器 $($_.FriendlyName)"
+            pnputil /enable-device "$($_.InstanceId)" | Out-Null
+            Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -EA SilentlyContinue
+            pnputil /restart-device "$($_.InstanceId)" | Out-Null
+            Add-Fixed "已启用 $($_.FriendlyName)"
+        }
+}
+
+function Fix-RestartExplorer {
+    Ui-Step '办法: 重启 explorer（壳层卡死导致键鼠假死）' 45
+    try {
+        $exp = Get-Process explorer -EA SilentlyContinue
+        if ($exp) {
+            Stop-Process -Name explorer -Force -EA SilentlyContinue
+            Start-Sleep -Milliseconds 600
+        }
+        Start-Process explorer | Out-Null
+        Add-Fixed '已重启 explorer'
+    } catch {
+        Ui-Line "explorer 重启跳过: $($_.Exception.Message)"
+    }
+}
+
+function Fix-VendorInputConflicts {
+    Ui-Step '办法: 结束键鼠厂商冲突软件（G HUB / Synapse / 雷云等）' 46
+    $names = @(
+        'LGHUB','lghub_agent','lghub_updater','logi*','LogiOptions*','OptionsPlus*',
+        'RazerSynapse*','RazerCentral*','rzsynapse*','GameManager*',
+        'Rapoo*','雷云*','DD*','Op*','Corsair*','iCUE*','ArmouryCrate*','ASUS*',
+        'SteelSeries*','GG*'
+    )
+    $killed = 0
+    foreach ($n in $names) {
+        Get-Process -Name $n -EA SilentlyContinue | ForEach-Object {
+            try {
+                Stop-Process -Id $_.Id -Force -EA Stop
+                Add-Fixed "结束进程 $($_.ProcessName)"
+                $killed++
+            } catch {}
+        }
+    }
+    # 常见服务：停掉即可，不强制删除（避免下次开机又起可再杀）
+    foreach ($svc in @('LGHUBUpdaterService','Razer Synapse Service','RzActionSvc','LogiRegistryService','iCUE*')) {
+        Get-Service -Name $svc -EA SilentlyContinue | ForEach-Object {
+            try {
+                if ($_.Status -eq 'Running') { Stop-Service $_.Name -Force -EA SilentlyContinue }
+                Set-Service $_.Name -StartupType Manual -EA SilentlyContinue
+                Add-Fixed "停服务 $($_.Name)"
+            } catch {}
+        }
+    }
+    if ($killed -eq 0) { Ui-Line '未发现正在运行的厂商键鼠套件' }
+}
+
+function Fix-MaliciousOrOrphanKernelDrivers {
+    Ui-Step '办法: 清理指向临时/下载目录的异常内核驱动服务' 47
+    $badRoots = @('\??\C:\Users\','\??\C:\Windows\Temp','\??\C:\Temp','\??\D:\下载','\??\D:\Download','AppData\Local\Temp','\Temp\')
+    $protect = @('usbxhci','usbhub','usbhub3','usbccgp','usbd','usbport','hidusb','mouhid','kbdhid','mouclass','kbdclass','wdf01000','ntoskrnl','disk','partmgr','volmgr','ACPI','pci','BasicDisplay','BasicRender','NDIS','Tcpip','http','afd','netbt')
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services' -EA SilentlyContinue | ForEach-Object {
+        $name = $_.PSChildName
+        if ($protect -contains $name) { return }
+        $type = (Get-ItemProperty $_.PSPath -Name Type -EA SilentlyContinue).Type
+        if ($type -notin @(1,2)) { return } # 1=kernel 2=fs
+        $img = (Get-ItemProperty $_.PSPath -Name ImagePath -EA SilentlyContinue).ImagePath
+        if (-not $img) { return }
+        $hit = $false
+        foreach ($b in $badRoots) {
+            if ("$img" -like "*$b*") { $hit = $true; break }
+        }
+        if (-not $hit) { return }
+        try {
+            Add-Issue "异常内核驱动 $name → $img"
+            Stop-Service $name -Force -EA SilentlyContinue
+            sc.exe delete $name | Out-Null
+            Add-Fixed "已删除异常服务 $name"
+        } catch {
+            Ui-Line "清理 $name 失败: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Test-IsVirtualNetName([string]$name, [string]$desc) {
+    $t = "$name $desc"
+    return [bool]($t -match 'Hyper-V|vEthernet|VMware|VirtualBox|TAP-|OpenVPN|WireGuard|Wintun|VPN|Loopback|Pseudo|Bluetooth|Microsoft Wi-Fi Direct|Hosted Network|Npc\s*Debug|Npc\s*Kernel')
+}
+
+function Fix-NetworkDriverImagePath {
+    Ui-Step '办法: 修复网卡相关 ImagePath 双 SystemRoot' 71
+    $targets = @(
+        @{ S='ndis'; F='ndis.sys' }, @{ S='NDIS'; F='ndis.sys' },
+        @{ S='tcpip'; F='tcpip.sys' }, @{ S='Tcpip'; F='tcpip.sys' },
+        @{ S='Tcpip6'; F='tcpip.sys' }, @{ S='netbt'; F='netbt.sys' },
+        @{ S='NetBT'; F='netbt.sys' }, @{ S='afd'; F='afd.sys' },
+        @{ S='AFD'; F='afd.sys' }, @{ S='wfplwfs'; F='wfplwfs.sys' },
+        @{ S='Ndisuio'; F='ndisuio.sys' }, @{ S='NdProt'; F='ndprot.sys' },
+        @{ S='vwififlt'; F='vwififlt.sys' }, @{ S='vwifibus'; F='vwifibus.sys' },
+        @{ S='nwifi'; F='nwifi.sys' }, @{ S='WlanSvc'; F=$null }
+    )
+    $sets = @('CurrentControlSet','ControlSet001','ControlSet002') | Where-Object {
+        Test-Path "HKLM:\SYSTEM\$_\Services"
+    }
+    $n = 0
+    foreach ($cs in $sets) {
+        foreach ($t in $targets) {
+            if (-not $t.F) { continue }
+            $key = "HKLM:\SYSTEM\$cs\Services\$($t.S)"
+            if (-not (Test-Path $key)) { continue }
+            $cur = (Get-ItemProperty $key -Name ImagePath -EA SilentlyContinue).ImagePath
+            if (-not $cur) { continue }
+            $hits = ([regex]::Matches([string]$cur, 'SystemRoot', 'IgnoreCase')).Count
+            if ($hits -lt 2) { continue }
+            $expect = "\SystemRoot\System32\drivers\$($t.F)"
+            New-ItemProperty -Path $key -Name ImagePath -PropertyType ExpandString -Value $expect -Force | Out-Null
+            Add-Issue "[$cs] $($t.S) 网络 ImagePath 双重 SystemRoot"
+            Add-Fixed "[$cs] $($t.S) → $expect"
+            $n++
+        }
+        # 扫一遍 Class=Net 驱动服务里的双 SystemRoot（覆盖 Realtek/Intel OEM）
+        Get-ChildItem "HKLM:\SYSTEM\$cs\Services" -EA SilentlyContinue | ForEach-Object {
+            $img = (Get-ItemProperty $_.PSPath -Name ImagePath -EA SilentlyContinue).ImagePath
+            if (-not $img) { return }
+            $hits = ([regex]::Matches([string]$img, 'SystemRoot', 'IgnoreCase')).Count
+            if ($hits -lt 2) { return }
+            $grp = (Get-ItemProperty $_.PSPath -Name Group -EA SilentlyContinue).Group
+            $name = $_.PSChildName
+            if ($grp -notmatch 'NDIS|Network|Stream' -and $name -notmatch 'e1|e2|rt|rtl|ixgbe|i40e|igb|mlx|bnxt|ath|iwl|mt7|Qualcomm|Killer') { return }
+            $file = [IO.Path]::GetFileName(([string]$img -replace '(?i)\\SystemRoot\\SystemRoot\\','\SystemRoot\' -replace '(?i)%SystemRoot%\\',''))
+            if (-not $file -or $file -notmatch '\.sys$') { return }
+            $expect = "\SystemRoot\System32\drivers\$file"
+            if (([string]$img) -eq $expect) { return }
+            New-ItemProperty -Path $_.PSPath -Name ImagePath -PropertyType ExpandString -Value $expect -Force | Out-Null
+            Add-Issue "[$cs] $name 网卡驱动 ImagePath 双重 SystemRoot"
+            Add-Fixed "[$cs] $name → $expect"
+            $n++
+        }
+    }
+    if ($n -eq 0) { Ui-Line '网络 ImagePath 无需修复' }
+}
+
+function Fix-NetworkFullAuto {
+    Ui-Phase '网络全自动（有线优先 · 离线可跑 · 不依赖外网下驱动）'
+    Ui-Step '办法: 拉起网络核心服务（DHCP/NLA/DNS/网卡管理）' 72
+    foreach ($svc in @('nsi','NlaSvc','netprofm','Netman','Dhcp','Dnscache','WinHttpAutoProxySvc','WlanSvc','WwanSvc','LanmanWorkstation','lmhosts','BFE')) {
+        $s = Get-Service $svc -EA SilentlyContinue
+        if (-not $s) { continue }
+        $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
+        $cfg = Get-ItemProperty $key -EA SilentlyContinue
+        if ($cfg -and $cfg.Start -eq 4) {
+            Add-Issue "网络服务禁用 $svc"
+            $start = if ($svc -in @('Dhcp','Dnscache','NlaSvc','nsi','BFE','LanmanWorkstation','Netman','netprofm')) { 2 } else { 3 }
+            Set-ItemProperty $key Start $start -Type DWord -EA SilentlyContinue
+            Add-Fixed "启用 $svc (Start=$start)"
+        }
+        if ($s.Status -ne 'Running') {
+            Set-Service $svc -StartupType Automatic -EA SilentlyContinue
+            if ($svc -in @('WlanSvc','WwanSvc','lmhosts')) {
+                Set-Service $svc -StartupType Manual -EA SilentlyContinue
+            }
+            # Dhcp 勿强杀重启，易卡代理；只尝试 Start
+            if ($svc -eq 'Dhcp') {
+                Start-Service $svc -EA SilentlyContinue
+            } else {
+                Restart-Service $svc -Force -EA SilentlyContinue
+                if ((Get-Service $svc -EA SilentlyContinue).Status -ne 'Running') {
+                    Start-Service $svc -EA SilentlyContinue
+                }
+            }
+            if ((Get-Service $svc -EA SilentlyContinue).Status -eq 'Running') {
+                Add-Fixed "启动网络服务 $svc"
+            } else {
+                Ui-Line "服务 $svc 未能 Running（可能被策略/依赖挡住）"
+            }
+        }
+    }
+
+    Fix-NetworkDriverImagePath
+
+    Ui-Step '办法: 启用设备管理器里挂掉的网卡（含问题码）' 74
+    pnputil /scan-devices | Out-Null
+    Get-PnpDevice -Class Net -EA SilentlyContinue | ForEach-Object {
+        $fn = [string]$_.FriendlyName
+        if (Test-IsVirtualNetName $fn $fn) { return }
+        $prob = 0
+        try { $prob = [int]$_.Problem } catch {}
+        if ($_.Status -in @('OK') -and $prob -eq 0) { return }
+        Add-Issue ("网卡设备 [{0}/P{1}] {2}" -f $_.Status, $prob, $fn)
+        Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -EA SilentlyContinue
+        pnputil /enable-device "$($_.InstanceId)" | Out-Null
+        pnputil /restart-device "$($_.InstanceId)" | Out-Null
+        Add-Fixed "启用/重启网卡设备 $fn"
+    }
+
+    Ui-Step '办法: 打开被禁用的网卡适配器（有线优先）' 76
+    $adapters = @(Get-NetAdapter -EA SilentlyContinue | Sort-Object {
+        if ($_.MediaType -match '802\.3|Ethernet' -or $_.InterfaceDescription -match 'Ethernet|PCI|GbE|LAN') { 0 }
+        elseif ($_.Name -match 'Wi-?Fi|Wireless|WLAN' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN|802\.11') { 1 }
+        else { 2 }
+    })
+    foreach ($a in $adapters) {
+        if (Test-IsVirtualNetName $a.Name $a.InterfaceDescription) { continue }
+        Ui-Line "网卡 $($a.Name): $($a.Status) · $($a.InterfaceDescription)"
+        if ($a.AdminStatus -eq 'Down' -or $a.Status -eq 'Disabled') {
+            Add-Issue "适配器禁用 $($a.Name)"
+            Enable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+            Add-Fixed "已启用 $($a.Name)"
+        }
+    }
+
+    Ui-Step '办法: 关闭网卡节能（识别了但休眠掉线）' 78
+    Get-NetAdapter -EA SilentlyContinue | ForEach-Object {
+        if (Test-IsVirtualNetName $_.Name $_.InterfaceDescription) { return }
+        try {
+            $p = Get-NetAdapterPowerManagement -Name $_.Name -EA SilentlyContinue
+            if ($p -and $p.AllowComputerToTurnOffDevice -eq 'Enabled') {
+                Set-NetAdapterPowerManagement -Name $_.Name -AllowComputerToTurnOffDevice Disabled -EA SilentlyContinue
+                Add-Fixed "关闭节能 $($_.Name)"
+            }
+        } catch {}
+        # PnP 设备电源管理勾选
+        $id = $_.PnPDeviceID
+        if ($id) {
+            $enum = "HKLM:\SYSTEM\CurrentControlSet\Enum\$id\Device Parameters"
+            if (Test-Path $enum) {
+                New-ItemProperty -Path $enum -Name EnhancedPowerManagementEnabled -PropertyType DWord -Value 0 -Force -EA SilentlyContinue | Out-Null
+                New-ItemProperty -Path $enum -Name AllowIdleIrpInD3 -PropertyType DWord -Value 0 -Force -EA SilentlyContinue | Out-Null
+                New-ItemProperty -Path $enum -Name SelectiveSuspendOn -PropertyType DWord -Value 0 -Force -EA SilentlyContinue | Out-Null
+            }
+        }
+    }
+
+    Ui-Step '办法: 硬复位物理网卡（禁用→启用，模拟拔插网线侧软件复位）' 80
+    foreach ($a in $adapters) {
+        if (Test-IsVirtualNetName $a.Name $a.InterfaceDescription) { continue }
+        try {
+            Disable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+            Start-Sleep -Milliseconds 600
+            Enable-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+            Restart-NetAdapter -Name $a.Name -Confirm:$false -EA SilentlyContinue
+            Add-Fixed "硬复位 $($a.Name)"
+        } catch {
+            Ui-Line "硬复位 $($a.Name) 失败: $($_.Exception.Message)"
+        }
+    }
+    Start-Sleep -Seconds 2
+
+    Ui-Step '办法: 清代理 / ARP / DNS，释放并续租 DHCP（有线无 IP 常见）' 82
+    try {
+        netsh winhttp reset proxy | Out-Null
+        Add-Fixed '已重置 WinHTTP 代理'
+    } catch {}
+    # 用户级代理勾选常把「网卡有线却上不了网」搞挂
+    $inet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    if (Test-Path $inet) {
+        Set-ItemProperty $inet ProxyEnable 0 -Type DWord -EA SilentlyContinue
+        Remove-ItemProperty $inet ProxyServer -Force -EA SilentlyContinue
+        Remove-ItemProperty $inet AutoConfigURL -Force -EA SilentlyContinue
+        Add-Fixed '已关闭当前用户系统代理'
+    }
+    arp -d * 2>$null | Out-Null
+    ipconfig /flushdns | Out-Null
+    ipconfig /registerdns | Out-Null
+    # 只对 Up/Disconnected 的物理卡续租（Disconnected=有线没插好也试，识别了但拿不到地址）
+    foreach ($a in @(Get-NetAdapter -EA SilentlyContinue)) {
+        if (Test-IsVirtualNetName $a.Name $a.InterfaceDescription) { continue }
+        if ($a.Status -notin @('Up','Disconnected','Not Present')) { continue }
+        try {
+            $cfg = Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -EA SilentlyContinue
+            # 清掉残留 APIPA / 坏静态，再 DHCP
+            Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue |
+                Where-Object { $_.PrefixOrigin -eq 'Manual' -or $_.IPAddress -like '169.254.*' } |
+                ForEach-Object {
+                    Remove-NetIPAddress -InterfaceIndex $_.InterfaceIndex -IPAddress $_.IPAddress -Confirm:$false -EA SilentlyContinue
+                    Add-Fixed "清除坏地址 $($_.IPAddress) @ $($a.Name)"
+                }
+            Set-NetIPInterface -InterfaceIndex $a.ifIndex -Dhcp Enabled -EA SilentlyContinue
+            ipconfig /release "$($a.Name)" 2>$null | Out-Null
+            ipconfig /renew "$($a.Name)" 2>$null | Out-Null
+            Add-Fixed "DHCP 续租 $($a.Name)"
+        } catch {
+            Ui-Line "DHCP $($a.Name): $($_.Exception.Message)"
+        }
+    }
+
+    Ui-Step '办法: 重置 Winsock / TCP-IP 协议栈（离线本地操作）' 84
+    $needRebootNet = $false
+    foreach ($cmd in @(
+        @{ A=@('winsock','reset'); L='Winsock' },
+        @{ A=@('int','ip','reset'); L='IPv4' },
+        @{ A=@('int','ipv6','reset'); L='IPv6' }
+    )) {
+        $out = ''
+        try { $out = & netsh @($cmd.A) 2>&1 | Out-String } catch { $out = $_.Exception.Message }
+        if ($out -match 'restart|重新启动|重启') { $needRebootNet = $true }
+        Add-Fixed "$($cmd.L) 协议栈已重置"
+        $trim = (($out -replace '\s+', ' ').Trim())
+        if ($trim.Length -gt 120) { $trim = $trim.Substring(0, 120) }
+        Ui-Line ("{0}: {1}" -f $cmd.L, $(if ($trim) { $trim } else { '完成' }))
+    }
+    # 栈重置后再拉一次关键服务
+    foreach ($svc in @('NlaSvc','Dnscache','WlanSvc','Netman')) {
+        Restart-Service $svc -Force -EA SilentlyContinue
+        Start-Service $svc -EA SilentlyContinue
+    }
+    Start-Service Dhcp -EA SilentlyContinue
+
+    Ui-Step '办法: 网络修复后复检' 86
+    $up = @(Get-NetAdapter -EA SilentlyContinue | Where-Object {
+        -not (Test-IsVirtualNetName $_.Name $_.InterfaceDescription) -and $_.Status -eq 'Up'
+    })
+    $ipOk = @(Get-NetIPConfiguration -EA SilentlyContinue | Where-Object {
+        $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address -and ($_.IPv4Address.IPAddress -notlike '169.254.*')
+    })
+    if ($up.Count -gt 0) {
+        foreach ($a in $up) { Ui-Line "复检 Up: $($a.Name) $($a.LinkSpeed) · $($a.InterfaceDescription)" }
+        Add-Fixed "物理网卡已 Up ×$($up.Count)"
+    } else {
+        Add-Issue '复检: 仍无物理网卡处于 Up（可能没插网线 / 口坏 / 驱动需重启）'
+    }
+    if ($ipOk.Count -gt 0) {
+        foreach ($c in $ipOk) {
+            $ip = ($c.IPv4Address | Select-Object -First 1).IPAddress
+            $gw = ($c.IPv4DefaultGateway | Select-Object -First 1).NextHop
+            Ui-Line "复检 IP: $($c.InterfaceAlias) = $ip 网关=$gw"
+        }
+        Add-Fixed "已拿到有效 IPv4 ×$($ipOk.Count)"
+    } else {
+        Add-Issue '复检: 网卡可能已识别但仍无有效 IP（线序/交换机/DHCP/需重启后协议栈才生效）'
+    }
+    if ($needRebootNet) {
+        Add-Issue '协议栈提示需重启后才完全生效（本工具不自动重启）'
+    }
+    Ui-Line '网络全自动本轮结束（坏口/没插线/交换机对端故障无法软件改）'
+}
+
+function Fix-HandbookFullAuto {
+    if ($script:FixScope -eq 'Net') {
+        Ui-Phase '救网全自动（专修有线通道）'
+        Fix-NetworkFullAuto
+        Ui-Line '救网栈本轮结束（没插线/口坏/交换机对端无法软件改）'
+        return
+    }
+    Ui-Phase '手册全自动栈（软件可改项全部执行）'
+    Fix-UsbDriverImagePath
     Fix-Power
     Fix-FastBoot
-    Fix-SuspectAutorun
+    Fix-EnableDisabledUsbControllers
     Fix-EnableDevices
     Fix-RestartControllers
-    Fix-RemoveOemDrivers
+    Fix-VendorInputConflicts
+    Fix-MaliciousOrOrphanKernelDrivers
+    Fix-RestartExplorer
     Fix-ResetHid
-    return (Test-UsbHealthy)
+    Fix-Policies
+    Fix-Filters
+    Fix-Services
+    if ($script:FixScope -ne 'Usb') {
+        Fix-NetworkFullAuto
+    }
+    Ui-Line '手册全自动栈本轮结束（硬件/BIOS/没插网线 无法由软件改写，见报告残留）'
+}
+
+function Invoke-PhaseSoft {
+    if ($script:FixScope -eq 'Net') {
+        Ui-Phase '1/2 救网常规'
+        Fix-NetworkFullAuto
+        return (Test-NetworkHealthy)
+    }
+    Ui-Phase '1/4 常规修复（含手册全自动 + UsbDk）'
+    Fix-UsbDkRemnants
+    Fix-HandbookFullAuto
+    Fix-RegistryDeep
+    Fix-SuspectAutorun
+    Fix-RemoveOemDrivers
+    return (Test-ScopeHealthy)
 }
 
 function Invoke-PhaseAggressive {
+    if ($script:FixScope -eq 'Net') {
+        Ui-Phase '2/2 救网强力（再跑一轮 + 强调协议栈）'
+        Fix-NetworkFullAuto
+        return (Test-NetworkHealthy)
+    }
     Ui-Phase '2/4 强力修复'
+    Fix-HandbookFullAuto
     Fix-UsbDkRemnants
     Fix-RegistryDeep
     Fix-Services
@@ -792,7 +1281,7 @@ function Invoke-PhaseAggressive {
     Fix-OnlineSfcDism
     Fix-RestartControllers
     Fix-ResetHid
-    return (Test-UsbHealthy)
+    return (Test-ScopeHealthy)
 }
 
 function Invoke-PhaseSafeModeFix {
@@ -805,10 +1294,15 @@ function Invoke-PhaseSafeModeFix {
     Fix-RemoveOemDrivers -Broad
     Fix-RemoveAllUsbRescan
     Fix-RestartControllers
-    return (Test-UsbHealthy)
+    return (Test-ScopeHealthy)
 }
 
 function Invoke-PhaseLastDitch {
+    if ($script:FixScope -eq 'Net') {
+        Ui-Phase '救网最后手段'
+        Fix-NetworkFullAuto
+        return (Test-NetworkHealthy)
+    }
     Ui-Phase '4/4 最后手段'
     Fix-UsbDkRemnants
     Fix-LastDitchRegistry
@@ -820,11 +1314,17 @@ function Invoke-PhaseLastDitch {
     Fix-ReinstallInboxUsb
     Fix-RestartControllers
     Fix-ResetHid
-    return (Test-UsbHealthy)
+    if ($script:FixScope -ne 'Usb') { Fix-NetworkFullAuto }
+    return (Test-ScopeHealthy)
 }
 
 function Complete-Success {
-    Ui-Finish $true "请晃一下鼠标 / 按一下键盘！`n能动了就修好了。已自动关闭后续自启。"
+    $msg = switch ($script:FixScope) {
+        'Net' { "请看网线灯 / 试远程能不能连！`n网卡 Up 了就有机会远程接手。已关后续自启。" }
+        'Usb' { "请晃一下鼠标 / 按一下键盘！`n能动了就修好了。已自动关闭后续自启。" }
+        default { "请试键鼠，并确认网线口灯！`n两边都活了最理想。已关后续自启。" }
+    }
+    Ui-Finish $true $msg
     Clear-AutoStart
     Set-State 'done_ok' 0
     Save-Report $true '修复成功'
@@ -856,14 +1356,15 @@ function Complete-Exhausted {
 }
 
 # ===================== 主流程 =====================
-Add-Content $LogFile "`r`n===== USB 穷尽修复 $(Get-Date) =====" -Encoding UTF8
+Add-Content $LogFile "`r`n===== $($script:ScopeTitle) $(Get-Date) Scope=$($script:FixScope) =====" -Encoding UTF8
 if (-not (Test-Path $FixDir)) { New-Item -ItemType Directory $FixDir -Force | Out-Null }
+if (-not (Test-Path $ScopeFile)) { Set-Content -Path $ScopeFile -Value $script:FixScope -Encoding ASCII -Force }
 if ($useUi) { New-WatchUi }
 
 $state = Get-State
 $phase = $state.phase
-Ui-Line "当前阶段=$phase  attempt=$($state.attempt)"
-Ui-Line '请干看着，程序会把所有办法试完'
+Ui-Line "范围=$($script:FixScope) 当前阶段=$phase  attempt=$($state.attempt)"
+Ui-Line $script:ScopeHint
 
 # 静默预修：只做 soft，不做阶段推进
 if ($Silent -and -not $Watch) {
@@ -876,6 +1377,14 @@ if ($Silent -and -not $Watch) {
 # 已结束过
 if ($phase -eq 'done_ok') { Complete-Success; exit 0 }
 if ($phase -eq 'done_fail') { Complete-Exhausted; exit 1 }
+
+# 救网专属：不进安全模式（对有线网帮助有限），soft → aggressive → lastditch
+if ($script:FixScope -eq 'Net' -and $phase -in @('safemode_pending', 'safemode_running', 'safemode_exit_check')) {
+    Ui-Line '救网模式跳过安全模式阶段 → 最后手段'
+    Disable-SafeModeBoot
+    Set-State 'lastditch' 0
+    $phase = 'lastditch'
+}
 
 # ---- 安全模式分支 ----
 if ($phase -eq 'safemode_pending') {
@@ -904,7 +1413,7 @@ if ($phase -eq 'safemode_pending') {
 }
 
 if ($phase -eq 'safemode_exit_check') {
-    $ok = Test-UsbHealthy
+    $ok = Test-ScopeHealthy
     if ($ok) { Complete-Success; exit 0 }
     Set-State 'lastditch' 0
     $phase = 'lastditch'
@@ -922,6 +1431,11 @@ switch ($phase) {
     'aggressive' {
         $ok = Invoke-PhaseAggressive
         if ($ok) { Complete-Success; exit 0 }
+        if ($script:FixScope -eq 'Net') {
+            Set-State 'lastditch' 0
+            Reboot-Soon "救网强力仍不够。`n20 秒后重启进入最后手段（跳过安全模式）。" 20
+            exit 1
+        }
         Enable-SafeModeNextBoot
         Set-State 'safemode_pending' 0
         Reboot-Soon "强力修复仍不够。`n20 秒后自动进「安全模式」再修一轮。" 20

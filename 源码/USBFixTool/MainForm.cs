@@ -15,7 +15,7 @@ public sealed class MainForm : Form
     {
         _api = api;
         _fallbackToNative = fallbackToNative;
-        Text = "急救工具";
+        Text = Program.IsPeMode ? "一体化急救工具 · PE" : "急救工具";
         Size = new Size(780, 720);
         MinimumSize = new Size(640, 560);
         StartPosition = FormStartPosition.CenterScreen;
@@ -77,7 +77,10 @@ public sealed class MainForm : Form
                     _webView.Visible = true;
                 }
             };
-            _webView.Source = new Uri(_api.BaseUrl);
+            var url = _api.BaseUrl;
+            if (Program.AutoFix)
+                url = url.TrimEnd('/') + "/?autofix=1";
+            _webView.Source = new Uri(url);
 
             _ = Task.Run(async () =>
             {

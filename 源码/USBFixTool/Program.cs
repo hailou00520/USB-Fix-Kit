@@ -7,10 +7,31 @@ static class Program
 {
     private const string MutexName = @"Local\USBFixTool_SingleInstance_v1";
 
+    /// <summary>命令行 --autofix：键鼠失灵时自动全面修复。</summary>
+    public static bool AutoFix { get; private set; }
+
+    /// <summary>命令行 --pe / --preview-pe：强制按 PE 模式显示网页界面（预览/真 PE 同款）。</summary>
+    public static bool ForcePeUi { get; private set; }
+
+    /// <summary>当前应按 PE 功能集运行（真 PE 或 --pe 预览）。</summary>
+    public static bool IsPeMode => ForcePeUi || RepairEngine.IsPeEnvironment();
+
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
-        using var mutex = new Mutex(true, MutexName, out var createdNew);
+        AutoFix = args.Any(a =>
+            a.Equals("--autofix", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("-autofix", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("/autofix", StringComparison.OrdinalIgnoreCase));
+
+        ForcePeUi = args.Any(a =>
+            a.Equals("--pe", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("-pe", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("/pe", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("--preview-pe", StringComparison.OrdinalIgnoreCase));
+
+        var mutexName = ForcePeUi ? MutexName + "_PePreview" : MutexName;
+        using var mutex = new Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             ActivateExistingWindow();
@@ -19,14 +40,7 @@ static class Program
 
         ApplicationConfiguration.Initialize();
 
-        // PE 环境：直接用原生界面（不依赖 WebView2，保证能用）
-        if (RepairEngine.IsPeEnvironment())
-        {
-            Application.Run(new NativePeForm());
-            return;
-        }
-
-        // 正常 Windows：优先 shadcn WebView；失败则回退原生界面
+        // 真 PE / 预览 / 正常 Windows：一律优先网页界面（你记得的那套）；无 WebView2 才退回原生窗
         LocalApiServer? api = null;
         try
         {

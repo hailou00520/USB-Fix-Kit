@@ -4,6 +4,16 @@ using Microsoft.Win32;
 
 namespace USBFixTool;
 
+public enum BootFixScope
+{
+    /// <summary>键鼠/USB + 有线网合并自修（默认）</summary>
+    Both,
+    /// <summary>仅键鼠/USB 穷尽自修</summary>
+    Usb,
+    /// <summary>仅救网（有线优先，方便远程接手）</summary>
+    Net
+}
+
 public sealed class RepairEngine
 {
     private readonly Action<string> _log;
@@ -197,13 +207,14 @@ public sealed class RepairEngine
 
     public async Task RunFullPeRepairAsync(string winDrive, CancellationToken ct)
     {
-        Log("══ 穷尽修复（按「只能干看着」设计）══");
-        Log("PE 里你点一次；进 Windows 后全自动，不用键鼠。");
+        Log("══ 穷尽修复（按「只能干看着」设计 · 不需网络）══");
+        Log("PE 里你点一次；进 Windows 后全自动修键鼠 + 有线网卡，不用键鼠、不用上网。");
         await RunPeUsbFixAsync(winDrive, ct);
         await RunAccountUnlockAsync(winDrive, ct);
         await RunDeployBootCheckAsync(winDrive, ct);
 
-        Log("远程自启已剥离为独立功能：需要时请点「部署远程软件自启」");
+        Log("已部署：开机服务静默预修 → 自动登录 → 全屏穷尽修复（含手册栈 + 网卡离线急救）");
+        Log("远程自启是独立可选功能（要网）；没网请忽略。");
         Log("══ PE 侧完成。请拔 U 盘重启，然后坐下干看着。══");
     }
 
@@ -290,9 +301,24 @@ public sealed class RepairEngine
     }
 
     public async Task RunDeployBootCheckAsync(string winDrive, CancellationToken ct)
+        => await RunDeployBootCheckAsync(winDrive, BootFixScope.Both, ct);
+
+    public async Task RunDeployBootCheckAsync(string winDrive, BootFixScope scope, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        Log("── 部署「干看着」全自动体检 ──");
+        var scopeArg = scope switch
+        {
+            BootFixScope.Usb => "Usb",
+            BootFixScope.Net => "Net",
+            _ => "Both"
+        };
+        var scopeLabel = scope switch
+        {
+            BootFixScope.Usb => "仅键鼠/USB",
+            BootFixScope.Net => "仅救网（有线优先）",
+            _ => "键鼠USB + 有线网合并"
+        };
+        Log($"── 部署开机自修 · {scopeLabel} ──");
         Log("场景：进 Windows 后你不能用键鼠，所以一切自动跑、全屏显示结果");
 
         var destDir = Path.Combine(winDrive, @"Windows\USBFix");
@@ -301,31 +327,47 @@ public sealed class RepairEngine
         ExtractEmbeddedResource("win_usb_fix.bat", Path.Combine(destDir, "win_usb_fix.bat"));
         ExtractEmbeddedResource("win_usb_fullcheck.ps1", Path.Combine(destDir, "win_usb_fullcheck.ps1"));
         await File.WriteAllTextAsync(Path.Combine(destDir, "state.txt"), "phase=soft\nattempt=0\n", ct);
-        Log("已写入穷尽修复脚本（常规→强力→安全模式→最后手段→判定重装）");
+        await File.WriteAllTextAsync(Path.Combine(destDir, "scope.txt"), scopeArg + "\n", Encoding.ASCII, ct);
+        Log($"已写入自修脚本（Scope={scopeArg}）");
+
+        var psCore =
+            $"-NoProfile -ExecutionPolicy Bypass -File \"C:\\Windows\\USBFix\\win_usb_fullcheck.ps1\" -Scope {scopeArg}";
 
         // 服务：开机早期静默先修一把（登录前）
         var bootWrap = Path.Combine(destDir, "boot_wrapper.bat");
-        await File.WriteAllTextAsync(bootWrap, """
+        await File.WriteAllTextAsync(bootWrap, $"""
             @echo off
             timeout /t 15 /nobreak >nul
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Windows\USBFix\win_usb_fullcheck.ps1" -Silent
+            powershell.exe -WindowStyle Hidden {psCore} -Silent
             exit
             """, Encoding.ASCII, ct);
 
         // 用户会话：全屏「干看着」界面（自动登录后你能看见）
         var watchBat = Path.Combine(destDir, "watch.bat");
-        await File.WriteAllTextAsync(watchBat, """
+        await File.WriteAllTextAsync(watchBat, $"""
             @echo off
-            start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File "C:\Windows\USBFix\win_usb_fullcheck.ps1" -Watch
+            start "" powershell.exe -WindowStyle Normal {psCore} -Watch
             """, Encoding.ASCII, ct);
 
+        var startupName = scope switch
+        {
+            BootFixScope.Usb => "键鼠USB急救.bat",
+            BootFixScope.Net => "网络急救自修.bat",
+            _ => "USB与网络急救.bat"
+        };
         var startupDir = Path.Combine(winDrive, @"ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp");
         Directory.CreateDirectory(startupDir);
+        // 清掉其它范围的旧启动项，避免叠跑
+        foreach (var old in new[] { "USB全面体检.bat", "键鼠USB急救.bat", "网络急救自修.bat", "USB与网络急救.bat" })
+        {
+            var p = Path.Combine(startupDir, old);
+            if (File.Exists(p)) File.Delete(p);
+        }
         await File.WriteAllTextAsync(
-            Path.Combine(startupDir, "USB全面体检.bat"),
-            "start \"\" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File \"C:\\Windows\\USBFix\\win_usb_fullcheck.ps1\" -Watch\r\n",
+            Path.Combine(startupDir, startupName),
+            $"start \"\" powershell.exe -WindowStyle Normal {psCore} -Watch\r\n",
             Encoding.ASCII, ct);
-        Log("已写入启动项（全屏可视，不用你点）");
+        Log($"已写入启动项 {startupName}（全屏可视，不用你点）");
 
         LoadHive("PEOFFLINE_SOFT", Path.Combine(winDrive, @"Windows\System32\config\SOFTWARE"));
         LoadHive("PEOFFLINE_SYS", Path.Combine(winDrive, @"Windows\System32\config\SYSTEM"));
@@ -337,11 +379,10 @@ public sealed class RepairEngine
             RunReg(@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v Start /t REG_DWORD /d 2 /f");
             RunReg(@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v ErrorControl /t REG_DWORD /d 1 /f");
             RunReg($@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v ImagePath /t REG_EXPAND_SZ /d ""{imagePath}"" /f");
-            RunReg(@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v DisplayName /t REG_SZ /d ""USB Full Check"" /f");
+            RunReg($@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v DisplayName /t REG_SZ /d ""USBFix Boot ({scopeArg})"" /f");
             RunReg(@"add ""HKLM\PEOFFLINE_SYS\ControlSet001\Services\USBFixBoot"" /v ObjectName /t REG_SZ /d LocalSystem /f");
 
-            // 登录后全屏体检（不要 Hidden）
-            var watchCmd = @"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File C:\Windows\USBFix\win_usb_fullcheck.ps1 -Watch";
+            var watchCmd = $"powershell.exe -WindowStyle Normal {psCore} -Watch";
             RunReg($@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows\CurrentVersion\Run"" /v USBFullCheck /t REG_SZ /d ""{watchCmd}"" /f");
             RunReg($@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows\CurrentVersion\RunOnce"" /v USBFullCheckOnce /t REG_SZ /d ""{watchCmd}"" /f");
 
@@ -353,12 +394,10 @@ public sealed class RepairEngine
             RunReg(@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows NT\CurrentVersion\Winlogon"" /v DefaultUserName /t REG_SZ /d Administrator /f");
             RunReg(@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows NT\CurrentVersion\Winlogon"" /v DefaultPassword /t REG_SZ /d "" /f");
             RunReg(@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows NT\CurrentVersion\Winlogon"" /v ForceAutoLogon /t REG_SZ /d 1 /f");
-            // 跳过首次登录动画 / 隐私选项卡住
             RunReg(@"add ""HKLM\PEOFFLINE_SOFT\Microsoft\Windows\CurrentVersion\Policies\System"" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f");
             RunReg(@"add ""HKLM\PEOFFLINE_SOFT\Policies\Microsoft\Windows\OOBE"" /v DisablePrivacyExperience /t REG_DWORD /d 1 /f");
 
-            Log("自启链路：服务静默预修 → 自动登录 → 全屏穷尽修复（你干看着）");
-            Log("阶段：常规 → 强力 → 安全模式 → 最后手段 → 全部失败才提示重装");
+            Log($"自启链路：服务静默预修 → 自动登录 → 全屏自修（{scopeLabel}）");
         }
         finally
         {
@@ -369,7 +408,7 @@ public sealed class RepairEngine
 
     public async Task RunWinUsbFixAsync(CancellationToken ct)
     {
-        Log("── Windows USB 全面体检 ──");
+        Log("── Windows 键鼠+网络 全面自动修复（手册全栈 · 离线）──");
         // 先把开机必起写好，再跑深度脚本（重启留给脚本结束后统一安排）
         await RunEnsureUsbBootAsync(ct);
 
@@ -395,13 +434,23 @@ public sealed class RepairEngine
             var after = await Task.Run(() => UsbDiagnostics.ScanLive(Log), ct);
             var checkPath = await WriteHumanCheckReportAsync(after, ct);
             Log($"报告已更新: {checkPath}");
+            if (after.Critical.Count > 0)
+            {
+                Log("");
+                Log("── 软件无法自动完成的残留（需人工）──");
+                Log("· 换线/换口/换电池、交叉测试另一台电脑");
+                Log("· 进 BIOS 开 USB Legacy / 恢复默认 / 刷固件");
+                Log("· 主板口物理损坏、集线器供电不足");
+                Log("· 网线没插 / 口坏 / 交换机对端故障（网卡已识别也救不了）");
+                Log("其余手册内软件可改项（含有线网卡急救）已全部自动执行。");
+            }
         }
         catch (Exception ex)
         {
             Log("报告刷新失败: " + ex.Message);
         }
 
-        Log("全面体检完成。请自行重启后再测键鼠（本工具不会自动重启）。");
+        Log("全面自动修复完成。请自行重启后再测键鼠与网线（本工具不会自动重启）。");
     }
 
     /// <summary>
@@ -482,6 +531,12 @@ public sealed class RepairEngine
                 }
             }
         }
+
+        Log("");
+        Log("── 修复损坏的驱动 ImagePath（双 SystemRoot → 问题码 39）──");
+        var imgFixed = UsbDriverImagePath.FixLive(sets, Log);
+        if (imgFixed == 0) Log("  · 无需修复");
+        else Log($"  · 已修复 {imgFixed} 处；若键鼠仍无响应请再跑「全面体检修复」以重启控制器");
 
         Log("");
         Log("── sc config 同步 ──");

@@ -103,6 +103,9 @@ public static class UsbDiagnostics
                 ReportStart(r, log, $"[{cs}] {svc}", start.Value, svc);
             }
 
+            log($"── {cs} · 驱动 ImagePath（双 SystemRoot）──");
+            CheckOfflineImagePaths(r, log, offlineSysRoot, cs);
+
             log($"── {cs} · 类过滤驱动 Upper/LowerFilters ──");
             foreach (var (guid, name) in ClassGuids)
             {
@@ -185,6 +188,9 @@ public static class UsbDiagnostics
             }
         }
 
+        log("── 驱动 ImagePath（双 SystemRoot / 问题码 39）──");
+        CheckLiveImagePaths(r, log);
+
         log("── 类过滤驱动 Upper/LowerFilters ──");
         foreach (var (guid, name) in ClassGuids)
         {
@@ -238,7 +244,7 @@ public static class UsbDiagnostics
                 log("  · AppInit_DLLs: 空");
         }
 
-        log("── 电源 / 快速启动 ──");
+        log("── 电源 / 快速启动 / USB 节能 ──");
         r.CheckedItems++;
         using (var pwr = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Power"))
         {
@@ -249,20 +255,133 @@ public static class UsbDiagnostics
                 log($"  · 快速启动 HiberbootEnabled = {hiber ?? 0}");
         }
 
-        r.CheckedItems++;
-        using (var usb = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\USB"))
-        {
-            // selective suspend often under usbhub Device Parameters — just note
-            log("  · USB 选择性暂停: 见各集线器设备属性（本项仅登记）");
-        }
+        CheckUsbPowerSaving(r, log);
 
-        log("── PnP 设备（USB / HID，完整状态）──");
+        log("── PnP 设备（问题码 / 主机控制器 / 真实键鼠）──");
         ScanPnpDevices(r, log);
+
+        log("── Kernel-PnP 驱动加载失败日志（近7天）──");
+        ScanKernelPnpLoadFailures(r, log);
 
         log("── 启动文件夹远程 exe（安全警告相关）──");
         ScanStartupRemoteExes(r, log);
 
+        log("── 网卡（有线优先：识别了但不通）──");
+        ScanLiveNetwork(r, log);
+
         return r;
+    }
+
+    private static void ScanLiveNetwork(DiagnosisReport r, Action<string> log)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("powershell",
+                "-NoProfile -Command \"" +
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "function V($n,$d){ return [bool](\"$n $d\" -match 'Hyper-V|vEthernet|VMware|VirtualBox|TAP-|OpenVPN|WireGuard|Wintun|VPN|Loopback|Pseudo|Bluetooth|Wi-Fi Direct') }; " +
+                "$ads=@(Get-NetAdapter | Where-Object { -not (V $_.Name $_.InterfaceDescription) }); " +
+                "$up=@($ads | Where-Object Status -eq 'Up'); " +
+                "$dis=@($ads | Where-Object Status -eq 'Disabled'); " +
+                "$ip=@($ads | Where-Object Status -eq 'Up' | ForEach-Object { " +
+                "  $c=Get-NetIPConfiguration -InterfaceIndex $_.ifIndex; " +
+                "  $a=@($c.IPv4Address | ForEach-Object IPAddress | Where-Object { $_ -and $_ -notlike '169.254.*' }); " +
+                "  if($a.Count){ [PSCustomObject]@{ n=$_.Name; ip=$a[0]; gw=$(($c.IPv4DefaultGateway|Select-Object -First 1).NextHop) } } " +
+                "}); " +
+                "$svcBad=@('Dhcp','Dnscache','NlaSvc','Netman','nsi' | ForEach-Object { $s=Get-Service $_ -EA SilentlyContinue; if($s -and $s.Status -ne 'Running'){ $_ } }); " +
+                "Write-Output ('AD_TOTAL=' + $ads.Count); " +
+                "Write-Output ('AD_UP=' + $up.Count); " +
+                "Write-Output ('AD_DIS=' + $dis.Count); " +
+                "Write-Output ('IP_OK=' + @($ip).Count); " +
+                "Write-Output ('SVC_BAD=' + ($svcBad -join ',')); " +
+                "foreach($a in ($ads | Select-Object -First 10)){ Write-Output ('AD|' + $a.Status + '|' + $a.Name + '|' + $a.InterfaceDescription) }; " +
+                "foreach($i in $ip){ Write-Output ('IP|' + $i.n + '|' + $i.ip + '|' + $i.gw) }" +
+                "\"")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            var output = p?.StandardOutput.ReadToEnd() ?? "";
+            p?.WaitForExit(30000);
+            r.CheckedItems += 3;
+
+            int total = 0, up = 0, dis = 0, ipOk = 0;
+            string svcBad = "";
+            foreach (var raw in output.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("AD_TOTAL=", StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(line.AsSpan(9), out var a)) total = a;
+                else if (line.StartsWith("AD_UP=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(6), out var b)) up = b;
+                else if (line.StartsWith("AD_DIS=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(7), out var c)) dis = c;
+                else if (line.StartsWith("IP_OK=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(6), out var d)) ipOk = d;
+                else if (line.StartsWith("SVC_BAD=", StringComparison.OrdinalIgnoreCase))
+                    svcBad = line.Length > 8 ? line[8..] : "";
+                else if (line.StartsWith("AD|", StringComparison.OrdinalIgnoreCase))
+                    log("  · 网卡 " + line[3..].Replace("|", " · "));
+                else if (line.StartsWith("IP|", StringComparison.OrdinalIgnoreCase))
+                    log("  · 地址 " + line[3..].Replace("|", " · "));
+            }
+
+            log($"  · 物理网卡: {total}，Up={up}，禁用={dis}，有效IPv4={ipOk}");
+            if (!string.IsNullOrWhiteSpace(svcBad))
+                AddCritical(r, log, $"网络关键服务未运行: {svcBad}");
+            if (total == 0)
+                AddAttention(r, log, "未枚举到物理网卡（驱动未装或总线异常）");
+            else if (dis > 0 && up == 0)
+                AddCritical(r, log, "网卡全部被禁用（识别了但被软件关掉）— 全面修复会自动启用");
+            else if (up == 0)
+                AddAttention(r, log, "网卡已识别但无一 Up（常见：没插网线 / 口无链路 / 节能休眠）");
+            else if (ipOk == 0)
+                AddCritical(r, log, "网卡已 Up 但仍无有效 IP（DHCP/协议栈/代理问题）— 全面修复会离线续租并重置栈");
+            else
+                log("  · 网卡链路与地址看起来正常");
+        }
+        catch (Exception ex)
+        {
+            AddAttention(r, log, "网卡枚举失败: " + ex.Message);
+        }
+    }
+
+    private static void CheckLiveImagePaths(DiagnosisReport r, Action<string> log)
+    {
+        var bad = 0;
+        foreach (var (svc, sys) in UsbDriverImagePath.Targets)
+        {
+            r.CheckedItems++;
+            try
+            {
+                using var k = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{svc}");
+                if (k == null) continue;
+                var img = k.GetValue("ImagePath", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
+                if (!UsbDriverImagePath.NeedsRepair(img, sys, out var why)) continue;
+                bad++;
+                AddCritical(r, log, $"{svc} ImagePath 异常（{why}）→ 问题码39风险: {img}");
+            }
+            catch { /* ignore */ }
+        }
+        if (bad == 0) log("  · USB/HID 相关 ImagePath 正常（无双 SystemRoot / 文件缺失）");
+    }
+
+    private static void CheckOfflineImagePaths(DiagnosisReport r, Action<string> log, string offlineSysRoot, string cs)
+    {
+        var bad = 0;
+        foreach (var (svc, _) in UsbDriverImagePath.Targets)
+        {
+            var path = $@"{offlineSysRoot}\{cs}\Services\{svc}";
+            if (!RegKeyExists(path)) continue;
+            r.CheckedItems++;
+            var img = QueryRegValue(path, "ImagePath");
+            if (!UsbDriverImagePath.IsCorrupt(img)) continue;
+            bad++;
+            AddCritical(r, log, $"[{cs}] {svc} ImagePath 双重 SystemRoot: {img}");
+        }
+        if (bad == 0) log("  · ImagePath 未发现双 SystemRoot");
     }
 
     private static void ReportStart(DiagnosisReport r, Action<string> log, string label, int start, string svcKey)
@@ -326,16 +445,168 @@ public static class UsbDiagnostics
         }
     }
 
+    private static void CheckUsbPowerSaving(DiagnosisReport r, Action<string> log)
+    {
+        // 手册 2.2 / 3.1：USB 选择性暂停 + Root Hub AllowIdleIrpInD3
+        try
+        {
+            r.CheckedItems++;
+            var psi = new ProcessStartInfo("powercfg", "/query SCHEME_CURRENT SUB_USB")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            var output = p?.StandardOutput.ReadToEnd() ?? "";
+            p?.WaitForExit(8000);
+            // 当前电源设置索引：0x00000001 = 开启选择性暂停（坏），0x00000000 = 关闭（好）
+            var enabled = false;
+            foreach (var line in output.Split('\n'))
+            {
+                if (line.Contains("当前交流电源设置索引", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("Current AC Power Setting Index", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("当前直流电源设置索引", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("Current DC Power Setting Index", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (line.Contains("0x00000001", StringComparison.OrdinalIgnoreCase) ||
+                        line.Contains("0x1", StringComparison.OrdinalIgnoreCase))
+                        enabled = true;
+                }
+            }
+            if (enabled)
+                AddAttention(r, log, "USB 选择性暂停已开启（使用中可能突然断连；全面修复会关闭）");
+            else
+                log("  · USB 选择性暂停: 已关闭或未启用");
+        }
+        catch (Exception ex)
+        {
+            log("  · USB 选择性暂停查询跳过: " + ex.Message);
+        }
+
+        try
+        {
+            r.CheckedItems++;
+            var psi = new ProcessStartInfo("powershell",
+                "-NoProfile -Command \"" +
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "$n=0; Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\USB' -Recurse -EA SilentlyContinue | " +
+                "  Where-Object { $_.PSChildName -eq 'Device Parameters' } | ForEach-Object { " +
+                "    $v=(Get-ItemProperty $_.PSPath -Name AllowIdleIrpInD3 -EA SilentlyContinue).AllowIdleIrpInD3; " +
+                "    if($v -eq 1){ $n++ } }; Write-Output ('IDLE=' + $n)" +
+                "\"")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            var output = (p?.StandardOutput.ReadToEnd() ?? "").Trim();
+            p?.WaitForExit(15000);
+            var idle = 0;
+            if (output.StartsWith("IDLE=", StringComparison.OrdinalIgnoreCase))
+                int.TryParse(output.AsSpan(5), out idle);
+            if (idle > 0)
+                AddAttention(r, log, $"Root Hub/USB 设备节能 AllowIdleIrpInD3=1 共 {idle} 处（闲置唤醒失败风险；全面修复会清零）");
+            else
+                log("  · Root Hub AllowIdleIrpInD3: 未发现开启项");
+        }
+        catch (Exception ex)
+        {
+            log("  · Root Hub 节能查询跳过: " + ex.Message);
+        }
+    }
+
     private static void ScanPnpDevices(DiagnosisReport r, Action<string> log)
+    {
+        try
+        {
+            // 结构化输出，避免把 PHANTOM/Unknown 幽灵设备误报成严重故障
+            var psi = new ProcessStartInfo("powershell",
+                "-NoProfile -Command \"" +
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "$all=Get-PnpDevice | Where-Object { $_.Class -in @('USB','HIDClass','Keyboard','Mouse','USBDevice') }; " +
+                "$hc=@($all | Where-Object { $_.FriendlyName -match 'Host Controller|xHCI|EHCI|OHCI|UHCI|可扩展主机控制器|主机控制器' }); " +
+                "$hcBad=@($hc | Where-Object { [int]$_.Problem -eq 39 -or $_.Status -eq 'Error' }); " +
+                "$realKm=@($all | Where-Object { $_.Class -in @('Keyboard','Mouse') -and $_.InstanceId -notmatch 'GVINPUT' -and $_.Status -eq 'OK' -and $_.Present -eq $true }); " +
+                "$p39=@($all | Where-Object { [int]$_.Problem -eq 39 }); " +
+                "Write-Output ('HC_TOTAL=' + $hc.Count); " +
+                "Write-Output ('HC_BAD=' + $hcBad.Count); " +
+                "Write-Output ('P39=' + $p39.Count); " +
+                "Write-Output ('REAL_KM_OK=' + $realKm.Count); " +
+                "foreach($d in $hcBad){ Write-Output ('HCERR|' + $d.Status + '|P' + $d.Problem + '|' + $d.FriendlyName) }; " +
+                "foreach($d in ($p39 | Select-Object -First 12)){ Write-Output ('P39|' + $d.Class + '|' + $d.FriendlyName) }; " +
+                "foreach($d in ($realKm | Select-Object -First 8)){ Write-Output ('KMOK|' + $d.Class + '|' + $d.FriendlyName) }" +
+                "\"")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            var output = p?.StandardOutput.ReadToEnd() ?? "";
+            p?.WaitForExit(25000);
+            r.CheckedItems += 4;
+
+            int hcTotal = 0, hcBad = 0, p39 = 0, realKm = 0;
+            foreach (var raw in output.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("HC_TOTAL=", StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(line.AsSpan(9), out var a)) hcTotal = a;
+                else if (line.StartsWith("HC_BAD=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(7), out var b)) hcBad = b;
+                else if (line.StartsWith("P39=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(4), out var c)) p39 = c;
+                else if (line.StartsWith("REAL_KM_OK=", StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(line.AsSpan(11), out var d)) realKm = d;
+                else if (line.StartsWith("HCERR|", StringComparison.OrdinalIgnoreCase))
+                    AddCritical(r, log, "USB 主机控制器异常: " + line[6..].Replace('|', ' '));
+                else if (line.StartsWith("P39|", StringComparison.OrdinalIgnoreCase))
+                    log("  · 问题码39: " + line[4..].Replace('|', ' '));
+                else if (line.StartsWith("KMOK|", StringComparison.OrdinalIgnoreCase))
+                    log("  · 真实键鼠 OK: " + line[5..].Replace('|', ' '));
+            }
+
+            log($"  · USB 主机控制器: {hcTotal}，异常(Error/问题码39): {hcBad}");
+            log($"  · 全机问题码39设备: {p39}（含幽灵残留时数字可能偏大）");
+            log($"  · 真实键鼠(非GVINPUT)当前 OK: {realKm}");
+
+            if (hcBad > 0)
+                AddCritical(r, log, $"有 {hcBad} 个 USB 主机控制器驱动加载失败（典型问题码39）— 键鼠会全部失灵");
+            else if (hcTotal == 0)
+                AddAttention(r, log, "未枚举到 USB 主机控制器（权限或驱动栈异常）");
+            else
+                log("  · 主机控制器状态正常");
+
+            if (realKm == 0 && hcBad > 0)
+                AddCritical(r, log, "无可用真实键盘/鼠标（仅虚拟 GVINPUT 存活时也属此情况）");
+            else if (realKm == 0)
+                AddAttention(r, log, "当前无 Present+OK 的真实键鼠（可能未插入，或已被上层故障拖死）");
+        }
+        catch (Exception ex)
+        {
+            AddAttention(r, log, "PnP 枚举失败: " + ex.Message);
+        }
+    }
+
+    private static void ScanKernelPnpLoadFailures(DiagnosisReport r, Action<string> log)
     {
         try
         {
             var psi = new ProcessStartInfo("powershell",
                 "-NoProfile -Command \"" +
-                "$d=Get-PnpDevice -PresentOnly -EA SilentlyContinue | Where-Object { $_.InstanceId -match 'USB|HID|KEYBOARD|MOUSE' }; " +
-                "$bad=@($d | Where-Object { $_.Status -ne 'OK' }); " +
-                "Write-Output ('TOTAL=' + @($d).Count); Write-Output ('BAD=' + $bad.Count); " +
-                "$d | Select-Object Status,Class,FriendlyName | Format-Table -AutoSize | Out-String -Width 220\"")
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "$since=(Get-Date).AddDays(-7); " +
+                "$ev=Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-Kernel-PnP'; Id=219; StartTime=$since} -MaxEvents 40; " +
+                "if(-not $ev){ Write-Output 'COUNT=0'; return }; " +
+                "$hit=@($ev | Where-Object { $_.Message -match '0xC0000033|0xC000026C|0xC0000034|USBXHCI|usbxhci|STATUS_OBJECT_NAME|无法加载|加载失败' }); " +
+                "Write-Output ('COUNT=' + $hit.Count); " +
+                "foreach($e in ($hit | Select-Object -First 6)){ " +
+                "  $t=$e.TimeCreated.ToString('yyyy-MM-dd HH:mm'); " +
+                "  $m=(($e.Message -replace '\\s+',' ').Substring(0,[Math]::Min(160,$e.Message.Length))); " +
+                "  Write-Output ('EV|' + $t + '|' + $m) " +
+                "}\"")
             {
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -346,36 +617,24 @@ public static class UsbDiagnostics
             p?.WaitForExit(20000);
             r.CheckedItems++;
 
-            int total = 0, bad = 0;
-            foreach (var line in output.Split('\n'))
+            var count = 0;
+            foreach (var raw in output.Split('\n'))
             {
-                if (line.StartsWith("TOTAL=", StringComparison.OrdinalIgnoreCase) &&
-                    int.TryParse(line.Trim().AsSpan(6), out var t)) total = t;
-                if (line.StartsWith("BAD=", StringComparison.OrdinalIgnoreCase) &&
-                    int.TryParse(line.Trim().AsSpan(4), out var b)) bad = b;
+                var line = raw.Trim();
+                if (line.StartsWith("COUNT=", StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(line.AsSpan(6), out var n)) count = n;
+                else if (line.StartsWith("EV|", StringComparison.OrdinalIgnoreCase))
+                    log("  · " + line[3..].Replace('|', ' '));
             }
 
-            log($"  · 在场 USB/HID 类设备: {total}，其中非 OK: {bad}");
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                if (line.StartsWith("TOTAL=") || line.StartsWith("BAD=") || line.Contains("---") ||
-                    line.StartsWith("Status", StringComparison.OrdinalIgnoreCase)) continue;
-                if (line.Length < 4) continue;
-                log("    " + line);
-                if (line.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
-                    line.Contains("Unknown", StringComparison.OrdinalIgnoreCase) ||
-                    line.Contains("Degraded", StringComparison.OrdinalIgnoreCase))
-                    AddCritical(r, log, "设备异常: " + line);
-            }
-
-            if (total == 0)
-                AddAttention(r, log, "未能枚举到 USB/HID 设备（可能权限不足或驱动栈异常）");
-            else if (bad == 0)
-                log("  · 全部枚举设备状态为 OK");
+            if (count > 0)
+                AddCritical(r, log, $"近7天 Kernel-PnP 事件219（驱动加载失败）相关 {count} 条 — 重点查 usbxhci ImagePath");
+            else
+                log("  · 近7天无 USBXHCI/0xC0000033/0xC000026C 类加载失败记录");
         }
         catch (Exception ex)
         {
-            AddAttention(r, log, "PnP 枚举失败: " + ex.Message);
+            log("  · 事件日志读取跳过: " + ex.Message);
         }
     }
 
@@ -473,9 +732,11 @@ public static class UsbDiagnostics
         return Convert.ToInt32(hex, 16);
     }
 
-    private static string QueryMultiSz(string path, string valueName)
+    private static string QueryMultiSz(string path, string valueName) => QueryRegValue(path, valueName);
+
+    private static string QueryRegValue(string path, string valueName)
     {
-        var psi = new ProcessStartInfo("reg", $"query \"{path}\" /v {valueName}")
+        var psi = new ProcessStartInfo("reg", $"query \"{path}\" /v \"{valueName}\"")
         {
             RedirectStandardOutput = true,
             UseShellExecute = false,
@@ -488,9 +749,17 @@ public static class UsbDiagnostics
         foreach (var line in output.Split('\n'))
         {
             if (!line.Contains(valueName, StringComparison.OrdinalIgnoreCase)) continue;
-            var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length >= 3)
-                return string.Join(" ", parts.Skip(2)).Trim();
+            // REG_SZ / REG_EXPAND_SZ / REG_MULTI_SZ: NAME  TYPE  DATA...
+            var idx = line.IndexOf("REG_", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var afterType = line[(idx + 4)..];
+            var sp = afterType.IndexOfAny(new[] { ' ', '\t' });
+            if (sp < 0) continue;
+            // skip type token (SZ / EXPAND_SZ / MULTI_SZ / DWORD)
+            var rest = afterType[sp..].TrimStart();
+            var sp2 = rest.IndexOfAny(new[] { ' ', '\t' });
+            if (sp2 < 0) return rest.Trim();
+            return rest[sp2..].Trim();
         }
         return "";
     }
